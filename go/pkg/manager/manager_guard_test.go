@@ -82,6 +82,7 @@ func TestRunTradingLoopSkipsInvalidDecisionPayload(t *testing.T) {
 	exec := &validationErrorExecutor{}
 	ex := &countingExchangeProvider{}
 	mkt := &staticMarketProvider{}
+	audit := &auditRecordingPersistence{}
 	m := &Manager{
 		traders: map[string]*VirtualTrader{
 			"t-invalid": {
@@ -100,6 +101,7 @@ func TestRunTradingLoopSkipsInvalidDecisionPayload(t *testing.T) {
 			},
 		},
 		positionOwners: make(map[string]string),
+		persistence:    audit,
 		stopChan:       make(chan struct{}),
 	}
 
@@ -110,6 +112,7 @@ func TestRunTradingLoopSkipsInvalidDecisionPayload(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Equal(t, 1, exec.calls, "test should exercise one decision cycle")
 	require.Zero(t, ex.placeOrders, "invalid decision payload must not reach order execution")
+	requireAuditEvent(t, audit.events, AuditEventDecisionValidationFailed)
 }
 
 func TestPolicyGatewayRejectsOversizeBeforeExchange(t *testing.T) {
@@ -119,6 +122,7 @@ func TestPolicyGatewayRejectsOversizeBeforeExchange(t *testing.T) {
 	m := &Manager{
 		traders:        map[string]*VirtualTrader{trader.ID: trader},
 		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
 	}
 
 	err := m.ExecuteDecision(trader, &executorpkg.Decision{
@@ -132,14 +136,17 @@ func TestPolicyGatewayRejectsOversizeBeforeExchange(t *testing.T) {
 
 	require.ErrorContains(t, err, "manager policy")
 	require.Zero(t, ex.placeOrders, "policy rejection must happen before exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
 }
 
 func TestPolicyGatewayApprovesAndExecutesValidDecision(t *testing.T) {
 	ex := &countingExchangeProvider{}
 	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	audit := &auditRecordingPersistence{}
 	m := &Manager{
 		traders:        map[string]*VirtualTrader{trader.ID: trader},
 		positionOwners: make(map[string]string),
+		persistence:    audit,
 	}
 
 	err := m.ExecuteDecision(trader, &executorpkg.Decision{
@@ -153,6 +160,8 @@ func TestPolicyGatewayApprovesAndExecutesValidDecision(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ex.placeOrders)
+	requireAuditEvent(t, audit.events, AuditEventApproved)
+	requireAuditEvent(t, audit.events, AuditEventOrderSubmitted)
 }
 
 func TestPolicyGatewayRejectsLiveModeWithoutExplicitAck(t *testing.T) {
@@ -303,4 +312,45 @@ func testPolicyTrader(ex exchange.Provider, mkt market.Provider) *VirtualTrader 
 		VirtualPositions: make(map[string]VirtualPosition),
 		Cooldown:         make(map[string]time.Time),
 	}
+}
+
+type auditRecordingPersistence struct {
+	events []AuditEvent
+}
+
+func (p *auditRecordingPersistence) RecordAuditEvent(_ context.Context, event AuditEvent) error {
+	p.events = append(p.events, event)
+	return nil
+}
+
+func (p *auditRecordingPersistence) RecordPositionEvent(context.Context, PositionEvent) error {
+	return nil
+}
+
+func (p *auditRecordingPersistence) RecordDecisionCycle(context.Context, DecisionCycleRecord) error {
+	return nil
+}
+
+func (p *auditRecordingPersistence) RecordAccountSnapshot(context.Context, AccountSyncSnapshot) error {
+	return nil
+}
+
+func (p *auditRecordingPersistence) RecordAnalytics(context.Context, AnalyticsSnapshot) error {
+	return nil
+}
+
+func (p *auditRecordingPersistence) HydrateCaches(context.Context, []string) error {
+	return nil
+}
+
+func requireAuditEvent(t *testing.T, events []AuditEvent, eventType AuditEventType) {
+	t.Helper()
+	for _, event := range events {
+		if event.Type == eventType {
+			require.NotEmpty(t, event.TraderID)
+			require.NotEmpty(t, event.CorrelationID)
+			return
+		}
+	}
+	require.Failf(t, "missing audit event", "event_type=%s events=%v", eventType, events)
 }

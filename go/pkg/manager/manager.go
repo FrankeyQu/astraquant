@@ -241,6 +241,7 @@ func (m *Manager) RegisterTrader(ctx context.Context, cfg TraderConfig) (*Virtua
 		ID:                   cfg.ID,
 		Name:                 cfg.Name,
 		Exchange:             cfg.ExchangeProvider,
+		ModelName:            cfg.Model,
 		ExchangeProvider:     ex,
 		MarketProvider:       mk,
 		Executor:             exec,
@@ -467,6 +468,7 @@ func (m *Manager) RunTradingLoop(ctx context.Context) error {
 					continue
 				}
 				cycleStart := time.Now()
+				trace := newAuditTrace(t.ID, cycleStart)
 				// Sharpe gating
 				if t.ExecGuards.SharpePauseThreshold != 0 && t.ExecGuards.PauseDurationOnBreach > 0 && t.Performance != nil {
 					if t.Performance.SharpeRatio < t.ExecGuards.SharpePauseThreshold {
@@ -487,6 +489,22 @@ func (m *Manager) RunTradingLoop(ctx context.Context) error {
 				out, decisionErr := t.Executor.GetFullDecision(&ectx)
 				// NOTE: BasicExecutor will still return a FullDecision even when validation fails (decisionErr != nil),
 				// so call sites must treat decisionErr as authoritative and avoid executing the payload until it passes.
+				if out != nil {
+					trace.PromptDigest = outPromptDigest(out)
+					if len(out.Decisions) == 0 {
+						m.recordAuditDecisionEvent(AuditEventDecisionGenerated, t, nil, trace, nil, "decision_generated", nil, map[string]any{
+							"decision_count": 0,
+						})
+					} else {
+						for i := range out.Decisions {
+							d := out.Decisions[i]
+							m.recordAuditDecisionEvent(AuditEventDecisionGenerated, t, &d, trace, nil, "decision_generated", nil, map[string]any{
+								"decision_index": i,
+								"decision_count": len(out.Decisions),
+							})
+						}
+					}
+				}
 
 				// Prepare journaling containers
 				var decisionsJSON string
@@ -502,6 +520,19 @@ func (m *Manager) RunTradingLoop(ctx context.Context) error {
 					if decisionErr != nil {
 						allOK = false
 						logx.WithContext(ctx).Errorf("manager: trader %s decision validation failed; skipping execution: %v", t.ID, decisionErr)
+						if len(out.Decisions) == 0 {
+							m.recordAuditDecisionEvent(AuditEventDecisionValidationFailed, t, nil, trace, nil, "decision_validation_failed", decisionErr, map[string]any{
+								"decision_count": 0,
+							})
+						} else {
+							for i := range out.Decisions {
+								d := out.Decisions[i]
+								m.recordAuditDecisionEvent(AuditEventDecisionValidationFailed, t, &d, trace, nil, "decision_validation_failed", decisionErr, map[string]any{
+									"decision_index": i,
+									"decision_count": len(out.Decisions),
+								})
+							}
+						}
 					} else {
 						// Close actions first, then open actions; cap new opens by remaining slots.
 						decisions := sortDecisionsCloseFirst(out.Decisions)
@@ -529,11 +560,11 @@ func (m *Manager) RunTradingLoop(ctx context.Context) error {
 								"confidence":        d.Confidence,
 								"result":            "ok",
 							}
-							approval, execErr := m.ApproveDecision(t, &d)
+							approval, execErr := m.approveDecisionWithAudit(t, &d, trace)
 							if execErr == nil {
 								act["approval_token"] = approval.ID
 								act["leverage"] = d.Leverage
-								execErr = m.executeDecisionWithApproval(t, &d, approval)
+								execErr = m.executeDecisionWithApproval(t, &d, approval, trace)
 							}
 							if execErr != nil {
 								act["result"] = "error"
@@ -608,14 +639,19 @@ func (m *Manager) Stop() {
 // ExecuteDecision executes a single decision using trader's exchange provider.
 // Placeholder MVP: perform basic validation and return nil.
 func (m *Manager) ExecuteDecision(trader *VirtualTrader, decision *executorpkg.Decision) error {
-	approval, err := m.ApproveDecision(trader, decision)
+	traderID := ""
+	if trader != nil {
+		traderID = trader.ID
+	}
+	trace := newAuditTrace(traderID, time.Now())
+	approval, err := m.approveDecisionWithAudit(trader, decision, trace)
 	if err != nil {
 		return err
 	}
-	return m.executeDecisionWithApproval(trader, decision, approval)
+	return m.executeDecisionWithApproval(trader, decision, approval, trace)
 }
 
-func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *executorpkg.Decision, approval *ApprovalToken) error {
+func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *executorpkg.Decision, approval *ApprovalToken, trace auditTrace) error {
 	if err := approval.Validate(trader, decision); err != nil {
 		return err
 	}
@@ -675,8 +711,12 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 		}
 		orderResp, err := trader.ExchangeProvider.ClosePosition(ctx, decision.Symbol)
 		if err != nil {
+			m.recordOrderFailed(trader, decision, trace, approval, "close_position", err, nil)
 			return err
 		}
+		m.recordOrderSubmitted(trader, decision, trace, approval, "close_position", map[string]any{
+			"response": summarizeOrderResponse(orderResp),
+		})
 		logx.Infof("manager: trader %s closed position symbol=%s action=%s", trader.ID, decision.Symbol, decision.Action)
 		// Mark cooldown timestamp on successful close
 		closeTime := time.Now()
@@ -796,10 +836,21 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 		)
 		resp, err := execProvider.IOCMarket(ctx, decision.Symbol, isBuy, qty, slippage, false)
 		if err != nil {
+			m.recordOrderFailed(trader, decision, trace, approval, "market_ioc", err, map[string]any{
+				"price":        price,
+				"quantity":     qty,
+				"slippage_bps": trader.MarketIOCSlippageBps,
+			})
 			return fmt.Errorf("manager: market_ioc order %s %s: %w", decision.Symbol, decision.Action, err)
 		}
 		orderResp = resp
 		summary := summarizeOrderResponse(resp)
+		m.recordOrderSubmitted(trader, decision, trace, approval, "market_ioc", map[string]any{
+			"price":        price,
+			"quantity":     qty,
+			"slippage_bps": trader.MarketIOCSlippageBps,
+			"response":     summary,
+		})
 		logx.Infof("manager: trader %s submitted market_ioc order symbol=%s notional=%.2f usd qty=%.6f slippage_bps=%.2f response=%s", trader.ID, decision.Symbol, decision.PositionSizeUSD, qty, trader.MarketIOCSlippageBps, summary)
 	case OrderStyleLimitIOC, "":
 		if p, ok := trader.ExchangeProvider.(interface {
@@ -837,10 +888,25 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 		)
 		resp, err := trader.ExchangeProvider.PlaceOrder(ctx, order)
 		if err != nil {
+			m.recordOrderFailed(trader, decision, trace, approval, "limit_ioc", err, map[string]any{
+				"asset":       assetIdx,
+				"price":       priceStr,
+				"quantity":    sizeStr,
+				"cloid":       cloid,
+				"reduce_only": false,
+			})
 			return fmt.Errorf("manager: place order %s %s: %w", decision.Symbol, decision.Action, err)
 		}
 		orderResp = resp
 		summary := summarizeOrderResponse(resp)
+		m.recordOrderSubmitted(trader, decision, trace, approval, "limit_ioc", map[string]any{
+			"asset":       assetIdx,
+			"price":       priceStr,
+			"quantity":    sizeStr,
+			"cloid":       cloid,
+			"reduce_only": false,
+			"response":    summary,
+		})
 		logx.Infof("manager: trader %s submitted limit_ioc order symbol=%s notional=%.2f usd qty=%.6f cloid=%s response=%s", trader.ID, decision.Symbol, decision.PositionSizeUSD, qty, cloid, summary)
 	default:
 		return fmt.Errorf("manager: trader %s unsupported order_style=%s", trader.ID, trader.OrderStyle)
