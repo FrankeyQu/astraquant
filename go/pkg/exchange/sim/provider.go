@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	defaultInitialEquity = 100000.0
-	defaultFallbackPrice = 100.0
+	defaultInitialEquity  = 100000.0
+	defaultFallbackPrice  = 100.0
+	defaultTakerFeeRate   = 0.0004
+	defaultMarketSlippage = 0.002
 )
 
 // Provider is a paper-trading exchange implementation that keeps positions,
@@ -23,6 +25,7 @@ type Provider struct {
 	mu sync.Mutex
 
 	nextAssetID int
+	nextOID     int64
 
 	assetIndex  map[string]int // symbol -> asset id
 	assetSymbol map[int]string // asset id -> symbol
@@ -45,6 +48,7 @@ type positionState struct {
 func New() *Provider {
 	return &Provider{
 		nextAssetID:   1,
+		nextOID:       1,
 		assetIndex:    make(map[string]int),
 		assetSymbol:   make(map[int]string),
 		leverage:      make(map[int]exchange.Leverage),
@@ -112,16 +116,14 @@ func (p *Provider) PlaceOrder(ctx context.Context, order exchange.Order) (*excha
 		return nil, fmt.Errorf("sim: unknown asset index %d", order.Asset)
 	}
 
-	realized, filled, err := p.applyOrderLocked(coin, price, size, order.IsBuy, order.ReduceOnly)
+	_, filled, _, err := p.executeOrderLocked(coin, price, size, order.IsBuy, order.ReduceOnly, p.feeRateForOrder(order))
 	if err != nil {
 		return nil, err
-	}
-	if realized != 0 {
-		p.cash += realized
 	}
 	if filled > 0 {
 		p.markPx[coin] = price
 	}
+	oid := p.nextOrderIDLocked()
 
 	resp := &exchange.OrderResponse{
 		Status: "ok",
@@ -132,13 +134,43 @@ func (p *Provider) PlaceOrder(ctx context.Context, order exchange.Order) (*excha
 					Filled: &exchange.FilledOrder{
 						TotalSz: formatDecimal(filled),
 						AvgPx:   formatDecimal(price),
-						Oid:     1,
+						Oid:     oid,
 					},
 				}},
 			},
 		},
 	}
 	return resp, nil
+}
+
+func (p *Provider) executeOrderLocked(coin string, price, size float64, isBuy, reduceOnly bool, feeRate float64) (float64, float64, float64, error) {
+	oldCash := p.cash
+	oldState := clonePosition(p.positions[coin])
+	existed := oldState != nil
+
+	realized, filled, err := p.applyOrderLocked(coin, price, size, isBuy, reduceOnly)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if filled == 0 {
+		return realized, filled, 0, nil
+	}
+
+	fee := math.Abs(filled * price * feeRate)
+	p.cash += realized - fee
+
+	_, unrealized, _, margin := p.buildAccountSnapshotLocked()
+	equity := p.cash + unrealized
+	if margin-equity > 1e-9 {
+		p.cash = oldCash
+		if existed {
+			p.positions[coin] = oldState
+		} else {
+			delete(p.positions, coin)
+		}
+		return 0, 0, 0, fmt.Errorf("sim: insufficient margin")
+	}
+	return realized, filled, fee, nil
 }
 
 func (p *Provider) applyOrderLocked(coin string, price, size float64, isBuy, reduceOnly bool) (float64, float64, error) {
@@ -238,7 +270,7 @@ func (p *Provider) IOCMarket(ctx context.Context, coin string, isBuy bool, qty f
 		price = defaultFallbackPrice
 	}
 	if slippage <= 0 {
-		slippage = 0.002
+		slippage = defaultMarketSlippage
 	}
 	if isBuy {
 		price *= 1 + slippage
@@ -288,16 +320,15 @@ func (p *Provider) ClosePosition(ctx context.Context, coin string) (*exchange.Or
 	}
 	size := math.Abs(state.Qty)
 	isBuy := state.Qty < 0
-	realized, filled, err := p.applyOrderLocked(c, price, size, isBuy, false)
+	price = applySlippage(price, isBuy, defaultMarketSlippage)
+	_, filled, _, err := p.executeOrderLocked(c, price, size, isBuy, true, defaultTakerFeeRate)
 	if err != nil {
 		return nil, err
-	}
-	if realized != 0 {
-		p.cash += realized
 	}
 	if filled > 0 {
 		p.markPx[c] = price
 	}
+	oid := p.nextOrderIDLocked()
 	resp := &exchange.OrderResponse{
 		Status: "ok",
 		Response: exchange.OrderResponseData{
@@ -308,7 +339,7 @@ func (p *Provider) ClosePosition(ctx context.Context, coin string) (*exchange.Or
 						Filled: &exchange.FilledOrder{
 							TotalSz: formatDecimal(filled),
 							AvgPx:   formatDecimal(price),
-							Oid:     0,
+							Oid:     oid,
 						},
 					},
 				},
@@ -399,6 +430,38 @@ func (p *Provider) resolveMarkPriceLocked(coin string) float64 {
 		return state.Entry
 	}
 	return defaultFallbackPrice
+}
+
+func (p *Provider) nextOrderIDLocked() int64 {
+	oid := p.nextOID
+	p.nextOID++
+	return oid
+}
+
+func (p *Provider) feeRateForOrder(order exchange.Order) float64 {
+	rate := defaultTakerFeeRate
+	if order.Builder != nil && order.Builder.FeeBps > 0 {
+		rate += float64(order.Builder.FeeBps) / 10000
+	}
+	return rate
+}
+
+func applySlippage(price float64, isBuy bool, slippage float64) float64 {
+	if slippage <= 0 {
+		return price
+	}
+	if isBuy {
+		return price * (1 + slippage)
+	}
+	return price * math.Max(0, 1-slippage)
+}
+
+func clonePosition(state *positionState) *positionState {
+	if state == nil {
+		return nil
+	}
+	cp := *state
+	return &cp
 }
 
 func (p *Provider) buildAccountSnapshotLocked() ([]exchange.Position, float64, float64, float64) {
