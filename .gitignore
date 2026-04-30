@@ -36,3 +36,14 @@ yarn-error.log*
 next-env.d.ts
 
 .idea/
+
+# local secrets and generated archives
+*.env
+*.env.*
+VPS.env
+*.key
+*.p12
+*.pfx
+*.zip
+*.tar
+*.tar.gz

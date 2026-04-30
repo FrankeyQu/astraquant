@@ -1,3 +1,33 @@
+# AstraQuant
+
+AI-native crypto trading platform with hard execution policy gates.
+
+This repository starts from the nof0 AI trading arena codebase and is being
+evolved into **AstraQuant**: an autonomous LLM trading platform where models can
+make decisions, but every executable order must pass deterministic risk checks,
+approval-token validation, and final exchange-state reconciliation before it can
+reach an exchange provider.
+
+Current AstraQuant focus:
+
+- AI-first decision loop for autonomous trading research.
+- PolicyGateway between model output and order execution.
+- Short-lived approval tokens for executable decisions.
+- Paper/testnet-first hardening before any real-money deployment.
+- Comparative analysis of nof0, HashTrade, and MAKORA design ideas.
+
+> Safety note: this project is research software, not financial advice. Do not
+> connect real funds until testnet/paper execution, key isolation, policy limits,
+> logging, and rollback procedures have been independently reviewed.
+
+## Upstream Heritage
+
+AstraQuant currently includes code derived from the public nof0 project
+(`https://github.com/wquguru/nof0`) and keeps its original documentation below
+for orientation while the project is renamed and hardened.
+
+---
+
 # NOF0 - 开源的 AI 交易竞技场
 
 <div align="center">

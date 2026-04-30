@@ -498,40 +498,50 @@ func (m *Manager) RunTradingLoop(ctx context.Context) error {
 					if b, e := json.Marshal(out.Decisions); e == nil {
 						decisionsJSON = string(b)
 					}
-					// Close actions first, then open actions; cap new opens by remaining slots.
-					decisions := sortDecisionsCloseFirst(out.Decisions)
-					// remaining slots by max positions
-					remaining := t.RiskParams.MaxPositions - len(ectx.Positions)
-					if remaining < 0 {
-						remaining = 0
-					}
-					// also enforce per-cycle cap if configured (>0)
-					cycleCap := t.ExecGuards.MaxNewPositionsPerCycle
-					if cycleCap > 0 && cycleCap < remaining {
-						remaining = cycleCap
-					}
-					decisions = capNewOpenDecisions(decisions, remaining)
-					for i := range decisions {
-						d := decisions[i]
-						execErr := m.ExecuteDecision(t, &d)
-						act := map[string]any{
-							"symbol":            d.Symbol,
-							"action":            d.Action,
-							"leverage":          d.Leverage,
-							"position_size_usd": d.PositionSizeUSD,
-							"entry_price":       d.EntryPrice,
-							"stop_loss":         d.StopLoss,
-							"take_profit":       d.TakeProfit,
-							"confidence":        d.Confidence,
-							"result":            "ok",
+					if decisionErr != nil {
+						allOK = false
+						logx.WithContext(ctx).Errorf("manager: trader %s decision validation failed; skipping execution: %v", t.ID, decisionErr)
+					} else {
+						// Close actions first, then open actions; cap new opens by remaining slots.
+						decisions := sortDecisionsCloseFirst(out.Decisions)
+						// remaining slots by max positions
+						remaining := t.RiskParams.MaxPositions - len(ectx.Positions)
+						if remaining < 0 {
+							remaining = 0
 						}
-						if execErr != nil {
-							act["result"] = "error"
-							act["error"] = execErr.Error()
-							allOK = false
-							logx.WithContext(ctx).Errorf("manager: trader %s decision action=%s symbol=%s error=%v", t.ID, d.Action, d.Symbol, execErr)
+						// also enforce per-cycle cap if configured (>0)
+						cycleCap := t.ExecGuards.MaxNewPositionsPerCycle
+						if cycleCap > 0 && cycleCap < remaining {
+							remaining = cycleCap
 						}
-						actions = append(actions, act)
+						decisions = capNewOpenDecisions(decisions, remaining)
+						for i := range decisions {
+							d := decisions[i]
+							act := map[string]any{
+								"symbol":            d.Symbol,
+								"action":            d.Action,
+								"leverage":          d.Leverage,
+								"position_size_usd": d.PositionSizeUSD,
+								"entry_price":       d.EntryPrice,
+								"stop_loss":         d.StopLoss,
+								"take_profit":       d.TakeProfit,
+								"confidence":        d.Confidence,
+								"result":            "ok",
+							}
+							approval, execErr := m.ApproveDecision(t, &d)
+							if execErr == nil {
+								act["approval_token"] = approval.ID
+								act["leverage"] = d.Leverage
+								execErr = m.executeDecisionWithApproval(t, &d, approval)
+							}
+							if execErr != nil {
+								act["result"] = "error"
+								act["error"] = execErr.Error()
+								allOK = false
+								logx.WithContext(ctx).Errorf("manager: trader %s decision action=%s symbol=%s error=%v", t.ID, d.Action, d.Symbol, execErr)
+							}
+							actions = append(actions, act)
+						}
 					}
 				} else {
 					allOK = false
@@ -597,6 +607,17 @@ func (m *Manager) Stop() {
 // ExecuteDecision executes a single decision using trader's exchange provider.
 // Placeholder MVP: perform basic validation and return nil.
 func (m *Manager) ExecuteDecision(trader *VirtualTrader, decision *executorpkg.Decision) error {
+	approval, err := m.ApproveDecision(trader, decision)
+	if err != nil {
+		return err
+	}
+	return m.executeDecisionWithApproval(trader, decision, approval)
+}
+
+func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *executorpkg.Decision, approval *ApprovalToken) error {
+	if err := approval.Validate(trader, decision); err != nil {
+		return err
+	}
 	if trader == nil || decision == nil {
 		return errors.New("manager: execute decision requires trader and decision")
 	}
@@ -618,6 +639,12 @@ func (m *Manager) ExecuteDecision(trader *VirtualTrader, decision *executorpkg.D
 		}
 		if err := m.SyncTraderPositions(trader.ID); err != nil {
 			logx.Errorf("manager: sync trader %s before execution failed: %v", trader.ID, err)
+		}
+		if err := m.ensureSymbolAvailable(trader, decision.Symbol); err != nil {
+			return err
+		}
+		if err := m.enforcePositionCapacity(trader); err != nil {
+			return err
 		}
 	}
 	if isClose {

@@ -1,12 +1,16 @@
 package manager
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"nof0-api/pkg/exchange"
 	executorpkg "nof0-api/pkg/executor"
+	"nof0-api/pkg/market"
 )
 
 func TestManagerAssignReleaseVirtualPosition(t *testing.T) {
@@ -72,4 +76,179 @@ func TestFilterPositionsForTrader(t *testing.T) {
 	other := m.filterPositionsForTrader("t2", positions)
 	require.Len(t, other, 1, "other trader should not see BTC")
 	require.Equal(t, "ETH", other[0].Coin)
+}
+
+func TestRunTradingLoopSkipsInvalidDecisionPayload(t *testing.T) {
+	exec := &validationErrorExecutor{}
+	ex := &countingExchangeProvider{}
+	mkt := &staticMarketProvider{}
+	m := &Manager{
+		traders: map[string]*VirtualTrader{
+			"t-invalid": {
+				ID:               "t-invalid",
+				ExchangeProvider: ex,
+				MarketProvider:   mkt,
+				Executor:         exec,
+				RiskParams:       RiskParameters{MaxPositions: 3, MaxPositionSizeUSD: 1000},
+				ResourceAlloc:    ResourceAllocation{CurrentEquityUSD: 10_000},
+				State:            TraderStateRunning,
+				DecisionInterval: time.Hour,
+				VirtualPositions: make(map[string]VirtualPosition),
+				Cooldown:         make(map[string]time.Time),
+			},
+		},
+		positionOwners: make(map[string]string),
+		stopChan:       make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+
+	err := m.RunTradingLoop(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, 1, exec.calls, "test should exercise one decision cycle")
+	require.Zero(t, ex.placeOrders, "invalid decision payload must not reach order execution")
+}
+
+func TestPolicyGatewayRejectsOversizeBeforeExchange(t *testing.T) {
+	ex := &countingExchangeProvider{}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	trader.RiskParams.MaxPositionSizeUSD = 100
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+	}
+
+	err := m.ExecuteDecision(trader, &executorpkg.Decision{
+		Symbol:          "BTC",
+		Action:          "open_long",
+		PositionSizeUSD: 500,
+		EntryPrice:      50_000,
+		Leverage:        2,
+		Confidence:      90,
+	})
+
+	require.ErrorContains(t, err, "manager policy")
+	require.Zero(t, ex.placeOrders, "policy rejection must happen before exchange submission")
+}
+
+func TestPolicyGatewayApprovesAndExecutesValidDecision(t *testing.T) {
+	ex := &countingExchangeProvider{}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+	}
+
+	err := m.ExecuteDecision(trader, &executorpkg.Decision{
+		Symbol:          "BTC",
+		Action:          "open_long",
+		PositionSizeUSD: 500,
+		EntryPrice:      50_000,
+		Leverage:        2,
+		Confidence:      90,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, ex.placeOrders)
+}
+
+type validationErrorExecutor struct {
+	calls int
+}
+
+func (e *validationErrorExecutor) GetFullDecision(*executorpkg.Context) (*executorpkg.FullDecision, error) {
+	e.calls++
+	return &executorpkg.FullDecision{
+		Decisions: []executorpkg.Decision{
+			{
+				Symbol:          "BTC",
+				Action:          "open_long",
+				PositionSizeUSD: 500,
+				EntryPrice:      50_000,
+				Leverage:        2,
+				Confidence:      90,
+			},
+		},
+	}, errors.New("validation failed")
+}
+
+func (e *validationErrorExecutor) UpdatePerformance(*executorpkg.PerformanceView) {}
+
+func (e *validationErrorExecutor) GetConfig() *executorpkg.Config {
+	return &executorpkg.Config{}
+}
+
+type countingExchangeProvider struct {
+	placeOrders int
+}
+
+func (p *countingExchangeProvider) PlaceOrder(context.Context, exchange.Order) (*exchange.OrderResponse, error) {
+	p.placeOrders++
+	return &exchange.OrderResponse{Status: "ok"}, nil
+}
+
+func (p *countingExchangeProvider) CancelOrder(context.Context, int, int64) error { return nil }
+
+func (p *countingExchangeProvider) GetOpenOrders(context.Context) ([]exchange.OrderStatus, error) {
+	return nil, nil
+}
+
+func (p *countingExchangeProvider) GetPositions(context.Context) ([]exchange.Position, error) {
+	return nil, nil
+}
+
+func (p *countingExchangeProvider) ClosePosition(context.Context, string) (*exchange.OrderResponse, error) {
+	return &exchange.OrderResponse{Status: "ok"}, nil
+}
+
+func (p *countingExchangeProvider) UpdateLeverage(context.Context, int, bool, int) error {
+	return nil
+}
+
+func (p *countingExchangeProvider) GetAccountState(context.Context) (*exchange.AccountState, error) {
+	return &exchange.AccountState{
+		MarginSummary: exchange.MarginSummary{
+			AccountValue:    "10000",
+			TotalMarginUsed: "0",
+		},
+	}, nil
+}
+
+func (p *countingExchangeProvider) GetAccountValue(context.Context) (float64, error) {
+	return 10000, nil
+}
+
+func (p *countingExchangeProvider) GetAssetIndex(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+type staticMarketProvider struct{}
+
+func (p *staticMarketProvider) Snapshot(context.Context, string) (*market.Snapshot, error) {
+	return &market.Snapshot{Symbol: "BTC", Price: market.PriceInfo{Last: 50_000}}, nil
+}
+
+func (p *staticMarketProvider) ListAssets(context.Context) ([]market.Asset, error) {
+	return []market.Asset{{Symbol: "BTC", IsActive: true, RawMetadata: map[string]any{"maxLeverage": 50}}}, nil
+}
+
+func testPolicyTrader(ex exchange.Provider, mkt market.Provider) *VirtualTrader {
+	return &VirtualTrader{
+		ID:               "t-policy",
+		ExchangeProvider: ex,
+		MarketProvider:   mkt,
+		RiskParams: RiskParameters{
+			MaxPositions:       3,
+			MaxPositionSizeUSD: 1000,
+			MaxMarginUsagePct:  80,
+			MajorCoinLeverage:  5,
+			AltcoinLeverage:    3,
+			MinConfidence:      50,
+		},
+		ResourceAlloc:    ResourceAllocation{CurrentEquityUSD: 10_000},
+		State:            TraderStateRunning,
+		VirtualPositions: make(map[string]VirtualPosition),
+		Cooldown:         make(map[string]time.Time),
+	}
 }
