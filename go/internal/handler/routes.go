@@ -59,6 +59,76 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Path:    "/conversations",
 				Handler: ConversationsHandler(serverCtx),
 			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/traders",
+				Handler: TradersHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/traders/:traderId",
+				Handler: TraderDetailHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/traders/:traderId/status",
+				Handler: TraderStatusHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/audit-events",
+				Handler: AuditEventsHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/orders",
+				Handler: OrdersHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/traders/:traderId/start",
+				Handler: TraderStartHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/traders/:traderId/stop",
+				Handler: TraderStopHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/traders/:traderId/pause",
+				Handler: TraderPauseHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/traders/:traderId/resume",
+				Handler: TraderResumeHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/decisions/:decisionId/approve",
+				Handler: DecisionApproveHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/decisions/:decisionId/reject",
+				Handler: DecisionRejectHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/orders/preview",
+				Handler: OrderPreviewHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/orders/:orderId/approve",
+				Handler: OrderApproveHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/orders/:orderId/reject",
+				Handler: OrderRejectHandler(serverCtx),
+			},
 		},
 		rest.WithPrefix("/api"),
 	)

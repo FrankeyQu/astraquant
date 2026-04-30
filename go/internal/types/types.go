@@ -258,8 +258,20 @@ type TradesResponse struct {
 	ServerTime int64   `json:"serverTime"`
 }
 
+type TradesRequest struct {
+	TraderId string `form:"trader_id,optional"`
+	Symbol   string `form:"symbol,optional"`
+	Side     string `form:"side,optional"`
+	Limit    int    `form:"limit,optional,default=100"`
+	Offset   int    `form:"offset,optional,default=0"`
+}
+
 type PositionsRequest struct {
-	Limit int `form:"limit,optional,default=1000"`
+	TraderId string `form:"trader_id,optional"`
+	Symbol   string `form:"symbol,optional"`
+	Status   string `form:"status,optional,default=open"`
+	Limit    int    `form:"limit,optional,default=1000"`
+	Offset   int    `form:"offset,optional,default=0"`
 }
 
 type PositionsByModel struct {
@@ -286,4 +298,242 @@ type Conversation struct {
 type ConversationsResponse struct {
 	Conversations []Conversation `json:"conversations"`
 	ServerTime    int64          `json:"serverTime"`
+}
+
+type ListMeta struct {
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	Count      int    `json:"count"`
+	NextOffset int    `json:"next_offset,omitempty"`
+	Source     string `json:"source,omitempty"`
+}
+
+type TraderRiskParams struct {
+	MaxPositions       int     `json:"max_positions"`
+	MaxPositionSizeUsd float64 `json:"max_position_size_usd"`
+	MaxMarginUsagePct  float64 `json:"max_margin_usage_pct"`
+	MajorCoinLeverage  int     `json:"major_coin_leverage"`
+	AltcoinLeverage    int     `json:"altcoin_leverage"`
+	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
+	MinConfidence      int     `json:"min_confidence"`
+	StopLossEnabled    bool    `json:"stop_loss_enabled"`
+	TakeProfitEnabled  bool    `json:"take_profit_enabled"`
+}
+
+type TraderExecGuards struct {
+	MaxNewPositionsPerCycle int     `json:"max_new_positions_per_cycle"`
+	LiquidityThresholdUsd   float64 `json:"liquidity_threshold_usd"`
+	MaxMarginUsagePct       float64 `json:"max_margin_usage_pct"`
+	CooldownAfterClose      string  `json:"cooldown_after_close"`
+	PauseDurationOnBreach   string  `json:"pause_duration_on_breach"`
+}
+
+type TraderStatus struct {
+	TraderId            string      `json:"trader_id"`
+	Status              string      `json:"status"`
+	IsRunning           bool        `json:"is_running"`
+	ActiveConfigVersion int64       `json:"active_config_version"`
+	LastDecisionAt      string      `json:"last_decision_at,omitempty"`
+	NextDecisionAt      string      `json:"next_decision_at,omitempty"`
+	PausedUntil         string      `json:"paused_until,omitempty"`
+	PauseReason         string      `json:"pause_reason,omitempty"`
+	UpdatedAt           string      `json:"updated_at,omitempty"`
+	Detail              interface{} `json:"detail,omitempty"`
+}
+
+type TraderSummary struct {
+	Id               string       `json:"id"`
+	Name             string       `json:"name"`
+	Model            string       `json:"model"`
+	ExchangeProvider string       `json:"exchange_provider"`
+	MarketProvider   string       `json:"market_provider"`
+	ExecutionMode    string       `json:"execution_mode"`
+	OrderStyle       string       `json:"order_style"`
+	AllocationPct    float64      `json:"allocation_pct"`
+	AutoStart        bool         `json:"auto_start"`
+	Status           TraderStatus `json:"status"`
+}
+
+type TraderDetail struct {
+	Id                   string           `json:"id"`
+	Name                 string           `json:"name"`
+	Model                string           `json:"model"`
+	ExchangeProvider     string           `json:"exchange_provider"`
+	MarketProvider       string           `json:"market_provider"`
+	ExecutionMode        string           `json:"execution_mode"`
+	OrderStyle           string           `json:"order_style"`
+	MarketIocSlippageBps float64          `json:"market_ioc_slippage_bps"`
+	DecisionInterval     string           `json:"decision_interval"`
+	AllocationPct        float64          `json:"allocation_pct"`
+	AutoStart            bool             `json:"auto_start"`
+	JournalEnabled       bool             `json:"journal_enabled"`
+	RiskParams           TraderRiskParams `json:"risk_params"`
+	ExecGuards           TraderExecGuards `json:"exec_guards"`
+	Status               TraderStatus     `json:"status"`
+	PromptDigest         string           `json:"prompt_digest,omitempty"`
+}
+
+type TradersRequest struct {
+	Status        string `form:"status,optional"`
+	ExecutionMode string `form:"execution_mode,optional"`
+	Limit         int    `form:"limit,optional,default=100"`
+	Offset        int    `form:"offset,optional,default=0"`
+}
+
+type TraderPathRequest struct {
+	TraderId string `path:"traderId"`
+}
+
+type TradersResponse struct {
+	Traders      []TraderSummary `json:"traders"`
+	Meta         ListMeta        `json:"meta"`
+	ServerTimeMs int64           `json:"server_time_ms"`
+}
+
+type TraderResponse struct {
+	Trader       TraderDetail `json:"trader"`
+	ServerTimeMs int64        `json:"server_time_ms"`
+}
+
+type TraderStatusResponse struct {
+	Status       TraderStatus `json:"status"`
+	ServerTimeMs int64        `json:"server_time_ms"`
+}
+
+type AuditEventsRequest struct {
+	TraderId             string `form:"trader_id,optional"`
+	Type                 string `form:"type,optional"`
+	CorrelationId        string `form:"correlation_id,optional"`
+	CreatedAfterRfc3339  string `form:"created_after_rfc3339,optional"`
+	CreatedBeforeRfc3339 string `form:"created_before_rfc3339,optional"`
+	Limit                int    `form:"limit,optional,default=100"`
+	Offset               int    `form:"offset,optional,default=0"`
+}
+
+type AuditEvent struct {
+	Id              int64       `json:"id"`
+	Type            string      `json:"type"`
+	TraderId        string      `json:"trader_id"`
+	CycleId         int64       `json:"cycle_id,omitempty"`
+	CorrelationId   string      `json:"correlation_id,omitempty"`
+	Symbol          string      `json:"symbol,omitempty"`
+	Action          string      `json:"action,omitempty"`
+	ModelId         string      `json:"model_id,omitempty"`
+	ModelName       string      `json:"model_name,omitempty"`
+	PromptDigest    string      `json:"prompt_digest,omitempty"`
+	ApprovalTokenId string      `json:"approval_token_id,omitempty"`
+	Reason          string      `json:"reason,omitempty"`
+	Error           string      `json:"error,omitempty"`
+	Detail          interface{} `json:"detail,omitempty"`
+	CreatedAt       string      `json:"created_at"`
+}
+
+type AuditEventsResponse struct {
+	Events       []AuditEvent `json:"events"`
+	Meta         ListMeta     `json:"meta"`
+	ServerTimeMs int64        `json:"server_time_ms"`
+}
+
+type OrdersRequest struct {
+	TraderId string `form:"trader_id,optional"`
+	Symbol   string `form:"symbol,optional"`
+	Status   string `form:"status,optional"`
+	Limit    int    `form:"limit,optional,default=100"`
+	Offset   int    `form:"offset,optional,default=0"`
+}
+
+type Order struct {
+	Id            string      `json:"id"`
+	TraderId      string      `json:"trader_id"`
+	Symbol        string      `json:"symbol"`
+	Side          string      `json:"side"`
+	Type          string      `json:"type"`
+	Status        string      `json:"status"`
+	Quantity      float64     `json:"quantity"`
+	LimitPrice    float64     `json:"limit_price,omitempty"`
+	CreatedAt     string      `json:"created_at,omitempty"`
+	UpdatedAt     string      `json:"updated_at,omitempty"`
+	CorrelationId string      `json:"correlation_id,omitempty"`
+	Detail        interface{} `json:"detail,omitempty"`
+}
+
+type OrdersResponse struct {
+	Orders       []Order  `json:"orders"`
+	Meta         ListMeta `json:"meta"`
+	Status       string   `json:"status"`
+	Message      string   `json:"message,omitempty"`
+	ServerTimeMs int64    `json:"server_time_ms"`
+}
+
+type TraderControlRequest struct {
+	TraderId       string `path:"traderId"`
+	RequestedBy    string `json:"requested_by"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotency_key,optional"`
+	CorrelationId  string `json:"correlation_id,optional"`
+	EffectiveUntil string `json:"effective_until,omitempty"`
+}
+
+type TraderControlResponse struct {
+	Accepted      bool   `json:"accepted"`
+	Status        string `json:"status"`
+	TraderId      string `json:"trader_id"`
+	Action        string `json:"action"`
+	CorrelationId string `json:"correlation_id,omitempty"`
+	Message       string `json:"message,omitempty"`
+	ServerTimeMs  int64  `json:"server_time_ms"`
+}
+
+type DecisionActionRequest struct {
+	DecisionId     string `path:"decisionId"`
+	RequestedBy    string `json:"requested_by"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotency_key,optional"`
+	CorrelationId  string `json:"correlation_id,optional"`
+}
+
+type DecisionActionResponse struct {
+	Accepted      bool   `json:"accepted"`
+	Status        string `json:"status"`
+	DecisionId    string `json:"decision_id"`
+	Action        string `json:"action"`
+	CorrelationId string `json:"correlation_id,omitempty"`
+	Message       string `json:"message,omitempty"`
+	ServerTimeMs  int64  `json:"server_time_ms"`
+}
+
+type OrderPreviewRequest struct {
+	TraderId      string      `json:"trader_id"`
+	DecisionId    string      `json:"decision_id,optional"`
+	CorrelationId string      `json:"correlation_id,optional"`
+	Orders        []Order     `json:"orders"`
+	RiskContext   interface{} `json:"risk_context,omitempty"`
+}
+
+type OrderPreviewResponse struct {
+	Accepted      bool        `json:"accepted"`
+	Status        string      `json:"status"`
+	PreviewId     string      `json:"preview_id,omitempty"`
+	CorrelationId string      `json:"correlation_id,omitempty"`
+	Checks        interface{} `json:"checks,omitempty"`
+	Message       string      `json:"message,omitempty"`
+	ServerTimeMs  int64       `json:"server_time_ms"`
+}
+
+type OrderActionRequest struct {
+	OrderId        string `path:"orderId"`
+	RequestedBy    string `json:"requested_by"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotency_key,optional"`
+	CorrelationId  string `json:"correlation_id,optional"`
+}
+
+type OrderActionResponse struct {
+	Accepted      bool   `json:"accepted"`
+	Status        string `json:"status"`
+	OrderId       string `json:"order_id"`
+	Action        string `json:"action"`
+	CorrelationId string `json:"correlation_id,omitempty"`
+	Message       string `json:"message,omitempty"`
+	ServerTimeMs  int64  `json:"server_time_ms"`
 }
