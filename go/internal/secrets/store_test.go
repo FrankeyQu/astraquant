@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,5 +48,5 @@ func TestRedactHelpers(t *testing.T) {
 
 	assert.Equal(t, "0x59[REDACTED]5e2f", Redact(secret))
 	assert.Equal(t, "failed with 0x59[REDACTED]5e2f", RedactText("failed with "+secret, secret))
-	assert.EqualError(t, RedactError(assert.AnError, secret), "assert.AnError general error for testing")
+	assert.EqualError(t, RedactError(fmt.Errorf("failed with %s", secret), secret), "failed with 0x59[REDACTED]5e2f")
 }
