@@ -1,6 +1,7 @@
 package exchange
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"nof0-api/internal/secrets"
 	"nof0-api/pkg/confkit"
 )
 
@@ -17,6 +19,8 @@ import (
 type Config struct {
 	Default   string                     `yaml:"default"`
 	Providers map[string]*ProviderConfig `yaml:"providers"`
+
+	secretStore secrets.SecretStore
 }
 
 // ProviderConfig describes how to construct a specific exchange provider instance.
@@ -30,8 +34,17 @@ type ProviderConfig struct {
 	MainAddress  string `yaml:"main_address"` // Main account address (for API wallet scenarios)
 	Testnet      bool   `yaml:"testnet"`
 
+	Credentials CredentialScope `yaml:"credentials"`
+
 	TimeoutRaw string        `yaml:"timeout"`
 	Timeout    time.Duration `yaml:"-"`
+}
+
+// CredentialScope selects the trader/session/provider tuple used for secret lookup.
+type CredentialScope struct {
+	TraderID  string `yaml:"trader_id"`
+	SessionID string `yaml:"session_id"`
+	Provider  string `yaml:"provider"`
 }
 
 // ProviderBuilder constructs a Provider from configuration.
@@ -118,6 +131,11 @@ func LoadConfigFromReader(r io.Reader) (*Config, error) {
 	return &cfg, nil
 }
 
+// SetSecretStore attaches a per-config secret store used while building providers.
+func (c *Config) SetSecretStore(store secrets.SecretStore) {
+	c.secretStore = store
+}
+
 func (c *Config) normalise() error {
 	if c.Providers == nil {
 		c.Providers = make(map[string]*ProviderConfig)
@@ -137,12 +155,11 @@ func (c *Config) normalise() error {
 
 func (p *ProviderConfig) expandEnv() {
 	p.Type = strings.TrimSpace(os.ExpandEnv(p.Type))
-	p.PrivateKey = strings.TrimSpace(os.ExpandEnv(p.PrivateKey))
-	p.APIKey = strings.TrimSpace(os.ExpandEnv(p.APIKey))
-	p.APISecret = strings.TrimSpace(os.ExpandEnv(p.APISecret))
-	p.Passphrase = strings.TrimSpace(os.ExpandEnv(p.Passphrase))
 	p.VaultAddress = strings.TrimSpace(os.ExpandEnv(p.VaultAddress))
 	p.MainAddress = strings.TrimSpace(os.ExpandEnv(p.MainAddress))
+	p.Credentials.TraderID = strings.TrimSpace(os.ExpandEnv(p.Credentials.TraderID))
+	p.Credentials.SessionID = strings.TrimSpace(os.ExpandEnv(p.Credentials.SessionID))
+	p.Credentials.Provider = strings.TrimSpace(os.ExpandEnv(p.Credentials.Provider))
 	p.TimeoutRaw = strings.TrimSpace(os.ExpandEnv(p.TimeoutRaw))
 }
 
@@ -196,25 +213,87 @@ func (p *ProviderConfig) validate(name string) error {
 		return fmt.Errorf("exchange config: provider %s has unsupported type %q", name, p.Type)
 	}
 
-	if strings.ToLower(p.Type) == "hyperliquid" && p.PrivateKey == "" {
-		return fmt.Errorf("exchange config: provider %s requires private_key", name)
-	}
 	return nil
 }
 
 // BuildProviders instantiates exchange providers according to the configuration.
 func (c *Config) BuildProviders() (map[string]Provider, error) {
+	return c.BuildProvidersWithSecrets(context.Background(), nil)
+}
+
+// BuildProvidersWithSecrets instantiates exchange providers with credentials resolved
+// at construction time instead of storing expanded secrets in Config.
+func (c *Config) BuildProvidersWithSecrets(ctx context.Context, store secrets.SecretStore) (map[string]Provider, error) {
+	if store == nil {
+		store = c.secretStore
+	}
+	if store == nil {
+		store = secrets.NewEnvStore()
+	}
 	result := make(map[string]Provider, len(c.Providers))
 	for name, providerCfg := range c.Providers {
-		builder, ok := lookupProviderBuilder(providerCfg.Type)
-		if !ok {
-			return nil, fmt.Errorf("exchange provider %s: unsupported type %q", name, providerCfg.Type)
-		}
-		provider, err := builder(name, providerCfg)
+		cfgCopy, err := providerCfg.withResolvedCredentials(ctx, name, store)
 		if err != nil {
-			return nil, fmt.Errorf("exchange provider %s: %w", name, err)
+			return nil, err
+		}
+		builder, ok := lookupProviderBuilder(cfgCopy.Type)
+		if !ok {
+			return nil, fmt.Errorf("exchange provider %s: unsupported type %q", name, cfgCopy.Type)
+		}
+		provider, err := builder(name, cfgCopy)
+		if err != nil {
+			return nil, fmt.Errorf("exchange provider %s: %w", name, secrets.RedactError(err, cfgCopy.PrivateKey, cfgCopy.APIKey, cfgCopy.APISecret, cfgCopy.Passphrase))
 		}
 		result[name] = provider
 	}
 	return result, nil
+}
+
+func (p *ProviderConfig) withResolvedCredentials(ctx context.Context, providerName string, store secrets.SecretStore) (*ProviderConfig, error) {
+	cfgCopy := *p
+	if strings.ToLower(cfgCopy.Type) != "hyperliquid" {
+		return &cfgCopy, nil
+	}
+	privateKey, err := resolveCredential(ctx, store, cfgCopy.PrivateKey, cfgCopy.secretKey("private_key"))
+	if err != nil {
+		return nil, fmt.Errorf("exchange provider %s: %w", providerName, err)
+	}
+	cfgCopy.PrivateKey = privateKey
+	if cfgCopy.PrivateKey == "" {
+		return nil, fmt.Errorf("exchange provider %s: requires private_key secret for %s", providerName, cfgCopy.secretKey("private_key").String())
+	}
+	return &cfgCopy, nil
+}
+
+func (p *ProviderConfig) secretKey(name string) secrets.Key {
+	provider := p.Credentials.Provider
+	if provider == "" {
+		provider = p.Type
+	}
+	return secrets.Key{
+		TraderID:  p.Credentials.TraderID,
+		SessionID: p.Credentials.SessionID,
+		Provider:  provider,
+		Name:      name,
+	}
+}
+
+func resolveCredential(ctx context.Context, store secrets.SecretStore, configured string, key secrets.Key) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" && !secrets.IsEnvReference(configured) {
+		return configured, nil
+	}
+	if secret, ok := secrets.LookupEnvReference(configured); ok {
+		if secret.Value != "" {
+			return secret.Value, nil
+		}
+	}
+	secret, err := store.Lookup(ctx, key)
+	if err != nil {
+		if configured != "" {
+			return "", fmt.Errorf("resolve %s from env reference or secret store: %w", key.String(), err)
+		}
+		return "", fmt.Errorf("resolve %s: %w", key.String(), err)
+	}
+	return secret.Value, nil
 }
