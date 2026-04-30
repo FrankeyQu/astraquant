@@ -3,6 +3,7 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,6 +11,12 @@ import (
 )
 
 const approvalTokenTTL = 30 * time.Second
+
+const (
+	allowLiveTradingEnv = "ASTRAQUANT_ALLOW_LIVE_TRADING"
+	liveTradingAckEnv   = "ASTRAQUANT_LIVE_TRADING_ACK"
+	liveTradingAckValue = "I_UNDERSTAND_THIS_CAN_LOSE_MONEY"
+)
 
 // ApprovalToken is the hand-off between AI intent and executable order flow.
 // The manager only submits orders after a decision has passed this policy layer.
@@ -48,8 +55,13 @@ func (m *Manager) ApproveDecision(trader *VirtualTrader, decision *executorpkg.D
 	if (isOpen || isClose) && symbol == "" {
 		return nil, errors.New("manager policy: symbol is required for trade action")
 	}
+	if isOpen || isClose {
+		if err := m.enforceExecutionMode(trader); err != nil {
+			return nil, err
+		}
+	}
 
-	checks := []string{"action_allowed", "shape_valid"}
+	checks := []string{"action_allowed", "shape_valid", "execution_mode"}
 	lev := decision.Leverage
 	if isOpen {
 		if decision.PositionSizeUSD <= 0 {
@@ -105,6 +117,59 @@ func (m *Manager) ApproveDecision(trader *VirtualTrader, decision *executorpkg.D
 		ExpiresAt:   now.Add(approvalTokenTTL),
 		Checks:      checks,
 	}, nil
+}
+
+func (m *Manager) enforceExecutionMode(trader *VirtualTrader) error {
+	if trader == nil {
+		return errors.New("manager policy: trader is required")
+	}
+	mode := normalizeExecutionMode(trader.ExecutionMode, trader.Exchange)
+	switch mode {
+	case ExecutionModePaper:
+		if !isPaperExecutionTarget(trader) {
+			return fmt.Errorf("manager policy: execution_mode=paper requires a paper/sim exchange provider, got %q", trader.Exchange)
+		}
+	case ExecutionModeTestnet:
+		if !isTestnetExecutionTarget(trader) {
+			return fmt.Errorf("manager policy: execution_mode=testnet requires a testnet exchange provider, got %q", trader.Exchange)
+		}
+	case ExecutionModeLive:
+		if os.Getenv("CI") != "" {
+			return errors.New("manager policy: live trading is disabled in CI")
+		}
+		if !truthyEnv(os.Getenv(allowLiveTradingEnv)) {
+			return fmt.Errorf("manager policy: live trading requires %s=true", allowLiveTradingEnv)
+		}
+		if os.Getenv(liveTradingAckEnv) != liveTradingAckValue {
+			return fmt.Errorf("manager policy: live trading requires %s=%s", liveTradingAckEnv, liveTradingAckValue)
+		}
+	default:
+		return fmt.Errorf("manager policy: unsupported execution_mode %q", mode)
+	}
+	return nil
+}
+
+func isPaperExecutionTarget(trader *VirtualTrader) bool {
+	name := strings.ToLower(strings.TrimSpace(trader.Exchange))
+	if strings.Contains(name, "paper") || strings.Contains(name, "sim") {
+		return true
+	}
+	providerType := strings.ToLower(fmt.Sprintf("%T", trader.ExchangeProvider))
+	return strings.Contains(providerType, "exchange/sim")
+}
+
+func isTestnetExecutionTarget(trader *VirtualTrader) bool {
+	name := strings.ToLower(strings.TrimSpace(trader.Exchange))
+	return strings.Contains(name, "testnet")
+}
+
+func truthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) enforcePositionCapacity(trader *VirtualTrader) error {

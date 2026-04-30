@@ -245,6 +245,7 @@ func (m *Manager) RegisterTrader(ctx context.Context, cfg TraderConfig) (*Virtua
 		MarketProvider:       mk,
 		Executor:             exec,
 		PromptTemplate:       cfg.PromptTemplate,
+		ExecutionMode:        cfg.ExecutionMode,
 		OrderStyle:           cfg.OrderStyle,
 		MarketIOCSlippageBps: cfg.MarketIOCSlippageBps,
 		RiskParams:           cfg.RiskParams,

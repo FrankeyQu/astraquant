@@ -86,9 +86,11 @@ func TestRunTradingLoopSkipsInvalidDecisionPayload(t *testing.T) {
 		traders: map[string]*VirtualTrader{
 			"t-invalid": {
 				ID:               "t-invalid",
+				Exchange:         "paper_trading",
 				ExchangeProvider: ex,
 				MarketProvider:   mkt,
 				Executor:         exec,
+				ExecutionMode:    ExecutionModePaper,
 				RiskParams:       RiskParameters{MaxPositions: 3, MaxPositionSizeUSD: 1000},
 				ResourceAlloc:    ResourceAllocation{CurrentEquityUSD: 10_000},
 				State:            TraderStateRunning,
@@ -151,6 +153,54 @@ func TestPolicyGatewayApprovesAndExecutesValidDecision(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ex.placeOrders)
+}
+
+func TestPolicyGatewayRejectsLiveModeWithoutExplicitAck(t *testing.T) {
+	t.Setenv(allowLiveTradingEnv, "")
+	t.Setenv(liveTradingAckEnv, "")
+	ex := &countingExchangeProvider{}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	trader.Exchange = "hyperliquid"
+	trader.ExecutionMode = ExecutionModeLive
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+	}
+
+	err := m.ExecuteDecision(trader, &executorpkg.Decision{
+		Symbol:          "BTC",
+		Action:          "open_long",
+		PositionSizeUSD: 500,
+		EntryPrice:      50_000,
+		Leverage:        2,
+		Confidence:      90,
+	})
+
+	require.ErrorContains(t, err, "live trading")
+	require.Zero(t, ex.placeOrders, "live gate rejection must happen before exchange submission")
+}
+
+func TestPolicyGatewayRejectsPaperModeOnNonPaperProvider(t *testing.T) {
+	ex := &countingExchangeProvider{}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	trader.Exchange = "hyperliquid"
+	trader.ExecutionMode = ExecutionModePaper
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+	}
+
+	err := m.ExecuteDecision(trader, &executorpkg.Decision{
+		Symbol:          "BTC",
+		Action:          "open_long",
+		PositionSizeUSD: 500,
+		EntryPrice:      50_000,
+		Leverage:        2,
+		Confidence:      90,
+	})
+
+	require.ErrorContains(t, err, "execution_mode=paper")
+	require.Zero(t, ex.placeOrders, "paper mode must not submit through a non-paper provider")
 }
 
 type validationErrorExecutor struct {
@@ -236,8 +286,10 @@ func (p *staticMarketProvider) ListAssets(context.Context) ([]market.Asset, erro
 func testPolicyTrader(ex exchange.Provider, mkt market.Provider) *VirtualTrader {
 	return &VirtualTrader{
 		ID:               "t-policy",
+		Exchange:         "paper_trading",
 		ExchangeProvider: ex,
 		MarketProvider:   mkt,
+		ExecutionMode:    ExecutionModePaper,
 		RiskParams: RiskParameters{
 			MaxPositions:       3,
 			MaxPositionSizeUSD: 1000,

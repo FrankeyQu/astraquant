@@ -95,6 +95,7 @@ type VirtualTrader struct {
 	MarketProvider       market.Provider
 	Executor             executorpkg.Executor
 	PromptTemplate       string
+	ExecutionMode        ExecutionMode
 	OrderStyle           OrderStyle
 	MarketIOCSlippageBps float64
 	RiskParams           RiskParameters

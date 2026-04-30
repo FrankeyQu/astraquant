@@ -25,6 +25,14 @@ const (
 	defaultMarketIOCSlippageBps = 50.0 // 0.50% slippage
 )
 
+type ExecutionMode string
+
+const (
+	ExecutionModePaper   ExecutionMode = "paper"
+	ExecutionModeTestnet ExecutionMode = "testnet"
+	ExecutionModeLive    ExecutionMode = "live"
+)
+
 // Config defines the overall manager configuration schema.
 type Config struct {
 	Manager    ManagerConfig    `yaml:"manager" json:"manager"`
@@ -50,6 +58,7 @@ type TraderConfig struct {
 	Name                 string         `yaml:"name" json:"name"`
 	ExchangeProvider     string         `yaml:"exchange_provider" json:"exchange_provider"`
 	MarketProvider       string         `yaml:"market_provider" json:"market_provider"`
+	ExecutionMode        ExecutionMode  `yaml:"execution_mode" json:"execution_mode"`
 	OrderStyle           OrderStyle     `yaml:"order_style" json:"order_style"`
 	MarketIOCSlippageBps float64        `yaml:"market_ioc_slippage_bps" json:"market_ioc_slippage_bps"`
 	PromptTemplate       string         `yaml:"prompt_template" json:"prompt_template"`
@@ -231,6 +240,7 @@ func (c *Config) expandFields() {
 		c.Traders[i].ID = strings.TrimSpace(c.Traders[i].ID)
 		c.Traders[i].Name = strings.TrimSpace(c.Traders[i].Name)
 		c.Traders[i].ExchangeProvider = strings.TrimSpace(c.Traders[i].ExchangeProvider)
+		c.Traders[i].ExecutionMode = normalizeExecutionMode(c.Traders[i].ExecutionMode, c.Traders[i].ExchangeProvider)
 		c.Traders[i].MarketProvider = strings.TrimSpace(c.Traders[i].MarketProvider)
 		c.Traders[i].OrderStyle = OrderStyle(strings.ToLower(strings.TrimSpace(string(c.Traders[i].OrderStyle))))
 		c.Traders[i].PromptTemplate = c.resolvePath(c.Traders[i].PromptTemplate)
@@ -309,6 +319,9 @@ func (c *Config) Validate() error {
 		if err := trader.validateOrderStyle(i); err != nil {
 			return err
 		}
+		if err := trader.validateExecutionMode(i); err != nil {
+			return err
+		}
 		// ExecGuards validation (optional; non-negative checks)
 		if trader.ExecGuards.MaxNewPositionsPerCycle < 0 {
 			return fmt.Errorf("manager config: traders[%d].exec_guards.max_new_positions_per_cycle cannot be negative", i)
@@ -341,6 +354,26 @@ func (c *Config) validateAllocationBudget(totalAllocation float64) error {
 	return nil
 }
 
+func normalizeExecutionMode(mode ExecutionMode, exchangeProvider string) ExecutionMode {
+	raw := strings.ToLower(strings.TrimSpace(string(mode)))
+	switch ExecutionMode(raw) {
+	case ExecutionModePaper, ExecutionModeTestnet, ExecutionModeLive:
+		return ExecutionMode(raw)
+	case "":
+		provider := strings.ToLower(strings.TrimSpace(exchangeProvider))
+		switch {
+		case strings.Contains(provider, "testnet"):
+			return ExecutionModeTestnet
+		case strings.Contains(provider, "paper"), strings.Contains(provider, "sim"):
+			return ExecutionModePaper
+		default:
+			return ExecutionModePaper
+		}
+	default:
+		return ExecutionMode(raw)
+	}
+}
+
 func (t TraderConfig) validateOrderStyle(index int) error {
 	switch t.OrderStyle {
 	case OrderStyleLimitIOC, OrderStyleMarketIOC:
@@ -351,6 +384,15 @@ func (t TraderConfig) validateOrderStyle(index int) error {
 		return fmt.Errorf("manager config: traders[%d].market_ioc_slippage_bps must be positive", index)
 	}
 	return nil
+}
+
+func (t TraderConfig) validateExecutionMode(index int) error {
+	switch t.ExecutionMode {
+	case ExecutionModePaper, ExecutionModeTestnet, ExecutionModeLive:
+		return nil
+	default:
+		return fmt.Errorf("manager config: traders[%d].execution_mode %q unsupported", index, t.ExecutionMode)
+	}
 }
 
 // Validate ensures risk parameters are within expected ranges.

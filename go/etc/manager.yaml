@@ -11,6 +11,7 @@ traders:
     name: Aggressive Short
     exchange_provider: hyperliquid_testnet
     market_provider: hyperliquid_testnet
+    execution_mode: testnet
     order_style: market_ioc
     market_ioc_slippage_bps: 75
     prompt_template: prompts/manager/aggressive_short.tmpl
@@ -34,6 +35,7 @@ traders:
     name: Conservative Long
     exchange_provider: hyperliquid_testnet
     market_provider: hyperliquid_testnet
+    execution_mode: testnet
     order_style: market_ioc
     market_ioc_slippage_bps: 75
     prompt_template: prompts/manager/conservative_long.tmpl
