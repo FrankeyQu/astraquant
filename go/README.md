@@ -95,7 +95,7 @@ curl http://localhost:8888/api/trades
 
 ```bash
 export ZENMUX_API_KEY=your_llm_api_key
-export HYPERLIQUID_PRIVATE_KEY=0000000000000000000000000000000000000000000000000000000000000001
+export HYPERLIQUID_PRIVATE_KEY=<hex_private_key_for_testnet_or_paper_only>
 ```
 
 2) 核对配置文件（仓库已提供样例，可按需调整）：
