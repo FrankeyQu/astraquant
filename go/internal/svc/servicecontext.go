@@ -1,6 +1,7 @@
 package svc
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"nof0-api/internal/config"
 	"nof0-api/internal/data"
 	"nof0-api/internal/model"
+	"nof0-api/internal/secrets"
 	"nof0-api/pkg/confkit"
 	exchangepkg "nof0-api/pkg/exchange"
 	_ "nof0-api/pkg/exchange/hyperliquid"
@@ -39,6 +41,7 @@ type ServiceContext struct {
 	ManagerConfig          *managerpkg.Config
 	ManagerPromptRenderers map[string]*managerpkg.PromptRenderer
 	ManagerPromptDigests   map[string]string
+	SecretStore            secrets.SecretStore
 	ExchangeConfig         *exchangepkg.Config
 	ExchangeProviders      map[string]exchangepkg.Provider
 	DefaultExchange        exchangepkg.Provider
@@ -75,10 +78,12 @@ type ServiceContext struct {
 
 func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 	configureLogging(c.Logging)
+	secretStore := secrets.NewEnvStore()
 
 	svc := &ServiceContext{
-		Config:     c,
-		DataLoader: data.NewDataLoader(c.DataPath),
+		Config:      c,
+		DataLoader:  data.NewDataLoader(c.DataPath),
+		SecretStore: secretStore,
 	}
 
 	cacheNodes := filterCacheNodes(c.Cache)
@@ -211,14 +216,15 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 		}
 	}
 	if exchangeCfg != nil {
+		exchangeCfg.SetSecretStore(secretStore)
 		if c.IsTestEnv() {
 			for _, provider := range exchangeCfg.Providers {
 				provider.Testnet = true
 			}
 		}
-		providers, err := exchangeCfg.BuildProviders()
+		providers, err := exchangeCfg.BuildProvidersWithSecrets(context.Background(), secretStore)
 		if err != nil {
-			log.Fatalf("failed to build exchange providers: %v", err)
+			log.Fatalf("failed to build exchange providers: %v", secrets.RedactError(err))
 		}
 		svc.ExchangeConfig = exchangeCfg
 		svc.ExchangeProviders = providers
