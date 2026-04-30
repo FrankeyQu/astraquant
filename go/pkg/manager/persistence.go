@@ -63,8 +63,39 @@ type AnalyticsSnapshot struct {
 	UpdatedAt      time.Time
 }
 
+// AuditEventType names immutable events in the AI decision to order lifecycle.
+type AuditEventType string
+
+const (
+	AuditEventDecisionGenerated        AuditEventType = "decision_generated"
+	AuditEventDecisionValidationFailed AuditEventType = "decision_validation_failed"
+	AuditEventPolicyRejected           AuditEventType = "policy_rejected"
+	AuditEventApproved                 AuditEventType = "approved"
+	AuditEventOrderSubmitted           AuditEventType = "order_submitted"
+	AuditEventOrderFailed              AuditEventType = "order_failed"
+)
+
+// AuditEvent captures the minimal trace contract for manager and policy events.
+type AuditEvent struct {
+	Type            AuditEventType
+	TraderID        string
+	CycleID         int64
+	CorrelationID   string
+	Symbol          string
+	Action          string
+	ModelID         string
+	ModelName       string
+	PromptDigest    string
+	ApprovalTokenID string
+	Reason          string
+	Error           string
+	Detail          []byte
+	CreatedAt       time.Time
+}
+
 // PersistenceService describes the hooks manager emits to capture state changes.
 type PersistenceService interface {
+	RecordAuditEvent(ctx context.Context, event AuditEvent) error
 	RecordPositionEvent(ctx context.Context, event PositionEvent) error
 	RecordDecisionCycle(ctx context.Context, record DecisionCycleRecord) error
 	RecordAccountSnapshot(ctx context.Context, snapshot AccountSyncSnapshot) error
@@ -73,6 +104,10 @@ type PersistenceService interface {
 }
 
 type noopPersistenceService struct{}
+
+func (noopPersistenceService) RecordAuditEvent(ctx context.Context, event AuditEvent) error {
+	return nil
+}
 
 func (noopPersistenceService) RecordPositionEvent(ctx context.Context, event PositionEvent) error {
 	return nil

@@ -25,6 +25,7 @@ import (
 	executorpkg "nof0-api/pkg/executor"
 	journal "nof0-api/pkg/journal"
 	managerpkg "nof0-api/pkg/manager"
+	"nof0-api/pkg/repo"
 )
 
 var (
@@ -39,6 +40,7 @@ type Service struct {
 	tradesModel               model.TradesModel
 	snapshotsModel            model.AccountEquitySnapshotsModel
 	decisionModel             model.DecisionCyclesModel
+	auditRepo                 repo.AuditEventRepository
 	cache                     gocache.Cache
 	redis                     *redis.Redis
 	ttl                       cachekeys.TTLSet
@@ -53,6 +55,7 @@ type Config struct {
 	TradesModel               model.TradesModel
 	SnapshotsModel            model.AccountEquitySnapshotsModel
 	DecisionModel             model.DecisionCyclesModel
+	AuditModel                model.AuditEventsModel
 	Cache                     gocache.Cache
 	Redis                     *redis.Redis
 	TTL                       cachekeys.TTLSet
@@ -71,12 +74,37 @@ func NewService(cfg Config) managerpkg.PersistenceService {
 		tradesModel:               cfg.TradesModel,
 		snapshotsModel:            cfg.SnapshotsModel,
 		decisionModel:             cfg.DecisionModel,
+		auditRepo:                 repo.NewAuditEventRepository(cfg.AuditModel),
 		cache:                     cfg.Cache,
 		redis:                     cfg.Redis,
 		ttl:                       cfg.TTL,
 		conversationsModel:        cfg.ConversationsModel,
 		conversationMessagesModel: cfg.ConversationMessagesModel,
 	}
+}
+
+// RecordAuditEvent persists immutable lifecycle events for AI decisions, policy, and orders.
+func (s *Service) RecordAuditEvent(ctx context.Context, event managerpkg.AuditEvent) error {
+	if s == nil || s.auditRepo == nil {
+		return nil
+	}
+	_, err := s.auditRepo.Record(ctx, repo.AuditEventRecord{
+		Type:            repo.AuditEventType(event.Type),
+		TraderID:        event.TraderID,
+		CycleID:         event.CycleID,
+		CorrelationID:   event.CorrelationID,
+		Symbol:          event.Symbol,
+		Action:          event.Action,
+		ModelID:         event.ModelID,
+		ModelName:       event.ModelName,
+		PromptDigest:    event.PromptDigest,
+		ApprovalTokenID: event.ApprovalTokenID,
+		Reason:          event.Reason,
+		Error:           event.Error,
+		Detail:          event.Detail,
+		CreatedAt:       event.CreatedAt,
+	})
+	return err
 }
 
 // RecordPositionEvent persists basic position lifecycle information.
