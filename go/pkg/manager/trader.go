@@ -91,6 +91,7 @@ type VirtualTrader struct {
 	ID                   string
 	Name                 string
 	Exchange             string
+	ModelName            string
 	ExchangeProvider     exchange.Provider
 	MarketProvider       market.Provider
 	Executor             executorpkg.Executor
