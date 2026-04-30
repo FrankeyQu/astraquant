@@ -2,6 +2,8 @@
 
 AI-native crypto trading platform with hard execution policy gates.
 
+[![CI](https://github.com/FrankeyQu/astraquant/actions/workflows/ci.yml/badge.svg)](https://github.com/FrankeyQu/astraquant/actions/workflows/ci.yml)
+
 This repository starts from the nof0 AI trading arena codebase and is being
 evolved into **AstraQuant**: an autonomous LLM trading platform where models can
 make decisions, but every executable order must pass deterministic risk checks,
@@ -19,6 +21,56 @@ Current AstraQuant focus:
 > Safety note: this project is research software, not financial advice. Do not
 > connect real funds until testnet/paper execution, key isolation, policy limits,
 > logging, and rollback procedures have been independently reviewed.
+
+## Quick Start for AstraQuant Development
+
+The current backend work happens in `go/`; frontend work happens in `web/`.
+Use paper or testnet mode by default and keep real exchange keys out of the
+repository.
+
+```bash
+git clone <repo>
+cd <repo>
+git config submodule.recurse true
+
+cd go
+cp .env.example .env
+make deps
+make docker-up
+make test
+make run
+```
+
+The Go API listens on `:8888` by default. The web console can be started from a
+separate shell:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+### Safe Mode Defaults
+
+- Treat all local runs as paper/testnet unless a reviewed live-trading path says
+  otherwise.
+- Do not commit `.env`, wallet private keys, API tokens, database dumps, or local
+  dependency directories.
+- CI runs a lightweight secret scan before core tests. It is intentionally
+  conservative and allows `go/.env.example` placeholders.
+- Live trading must remain explicitly gated by code and configuration; README
+  examples should never require live credentials.
+
+### Development Checks
+
+Run these before handing off a change:
+
+```bash
+cd go
+make test
+make -n build test docker-up docker-down docker-ps
+docker compose -f docker-compose.yml config
+```
 
 ## Upstream Heritage
 

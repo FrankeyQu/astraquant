@@ -14,6 +14,7 @@ CONFIG_FILE=etc/nof0.yaml
 BUILD_DIR=bin
 TEST_SCRIPT=scripts/run_tests.py
 LOCAL_POSTGRES_DSN=postgres://nof0:nof0@localhost:5432/nof0?sslmode=disable
+DOCKER_COMPOSE ?= docker compose
 
 # =============================================================================
 # Help and Documentation
@@ -67,10 +68,10 @@ clean: ## Clean build artifacts
 # Docker Infrastructure
 # =============================================================================
 docker-up: ## Start postgres and redis containers
-	docker-compose up -d postgres redis
+	$(DOCKER_COMPOSE) up -d postgres redis
 
 docker-down: ## Stop all docker containers
-	docker-compose down
+	$(DOCKER_COMPOSE) down
 
 docker-reset: ## Reset database (drops and recreates)
 	docker exec nof0-postgres psql -U nof0 -d postgres -c "DROP DATABASE IF EXISTS nof0;"
@@ -78,10 +79,10 @@ docker-reset: ## Reset database (drops and recreates)
 	@echo "\033[32mDatabase reset complete. Run 'make db-local-migrate' to apply migrations.\033[0m"
 
 docker-logs: ## Show docker container logs
-	docker-compose logs -f postgres redis
+	$(DOCKER_COMPOSE) logs -f postgres redis
 
 docker-ps: ## Show docker container status
-	docker-compose ps
+	$(DOCKER_COMPOSE) ps
 
 # =============================================================================
 # Local Development Database
