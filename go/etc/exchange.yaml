@@ -3,8 +3,13 @@ default: hyperliquid_testnet
 providers:
   hyperliquid_testnet:
     type: hyperliquid
-    # Hex-encoded private key used for trade signing; inject via environment variable.
-    private_key: ${HYPERLIQUID_PRIVATE_KEY}
+    # Secrets are resolved by SecretStore at provider construction time.
+    # Lookup key: trader_id/session_id/provider/private_key.
+    # Local env fallback: ASTRAQUANT_HYPERLIQUID_PRIVATE_KEY, then HYPERLIQUID_PRIVATE_KEY.
+    credentials:
+      trader_id: ${ASTRAQUANT_TRADER_ID}
+      session_id: ${ASTRAQUANT_SESSION_ID}
+      provider: hyperliquid
     # Main account address for info requests (only needed when using API wallet).
     main_address: ${HYPERLIQUID_MAIN_ADDRESS}
     # true to route requests to Hyperliquid testnet endpoints.
