@@ -68,13 +68,17 @@ func NewService(cfg Config) managerpkg.PersistenceService {
 	if cfg.SQLConn == nil {
 		return nil
 	}
+	auditModel := cfg.AuditModel
+	if auditModel == nil {
+		auditModel = model.NewAuditEventsModel(cfg.SQLConn, nil)
+	}
 	return &Service{
 		sqlConn:                   cfg.SQLConn,
 		positionsModel:            cfg.PositionsModel,
 		tradesModel:               cfg.TradesModel,
 		snapshotsModel:            cfg.SnapshotsModel,
 		decisionModel:             cfg.DecisionModel,
-		auditRepo:                 repo.NewAuditEventRepository(cfg.AuditModel),
+		auditRepo:                 repo.NewAuditEventRepository(auditModel),
 		cache:                     cfg.Cache,
 		redis:                     cfg.Redis,
 		ttl:                       cfg.TTL,
