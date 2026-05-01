@@ -1,5 +1,5 @@
 export const BASE_URL =
-  process.env.NEXT_PUBLIC_NOF1_API_BASE_URL || "https://nof1.ai/api";
+  process.env.NEXT_PUBLIC_NOF1_API_BASE_URL || "http://localhost:8888/api";
 
 export async function fetcher<T = unknown>(
   url: string,

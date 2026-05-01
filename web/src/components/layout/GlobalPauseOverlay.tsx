@@ -19,9 +19,12 @@ const RESOURCE_LINKS = [
 ];
 
 export default function GlobalPauseOverlay() {
+  if (process.env.NEXT_PUBLIC_SHOW_GLOBAL_PAUSE_OVERLAY !== "true") {
+    return null;
+  }
   return (
     <div
-      className="fixed inset-x-0 bottom-0 top-[var(--header-h)] z-[70] pointer-events-auto"
+      className="fixed inset-x-0 bottom-0 top-[var(--header-h)] z-[70] pointer-events-none"
       aria-live="polite"
     >
       <div
@@ -30,7 +33,7 @@ export default function GlobalPauseOverlay() {
           background: "var(--background)",
         }}
       />
-      <div className="relative z-10 flex h-full w-full items-center justify-center px-4 py-8">
+      <div className="relative z-10 flex h-full w-full items-center justify-center px-4 py-8 pointer-events-auto">
         <div
           className="w-full max-w-2xl rounded-3xl border px-6 py-7 sm:px-10 sm:py-9 text-center space-y-5 shadow-[0_20px_80px_rgba(0,0,0,0.45)] overflow-y-auto"
           style={{

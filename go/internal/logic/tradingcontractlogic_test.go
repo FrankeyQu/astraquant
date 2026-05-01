@@ -50,6 +50,7 @@ func TestTradingContractControlRejectsUnknownTrader(t *testing.T) {
 	orderResp, err := NewOrdersLogic(context.Background(), svcCtx).Orders(&types.OrdersRequest{})
 	require.NoError(t, err)
 	require.Equal(t, "not_available", orderResp.Status)
+	require.Equal(t, "audit_repo_unavailable", orderResp.Meta.Source)
 	require.Empty(t, orderResp.Orders)
 
 	controlResp, err := NewTraderControlLogic(context.Background(), svcCtx).Control(&types.TraderControlRequest{TraderId: "missing"}, "start")
@@ -57,6 +58,88 @@ func TestTradingContractControlRejectsUnknownTrader(t *testing.T) {
 	require.False(t, controlResp.Accepted)
 	require.Equal(t, "rejected", controlResp.Status)
 	require.False(t, controlResp.Queued)
+}
+
+func TestOrdersUsesAuditEventsReadModel(t *testing.T) {
+	older := time.Date(2026, 5, 1, 1, 1, 0, 0, time.UTC)
+	newer := older.Add(time.Minute)
+	auditRepo := &fakeAuditEventRepo{
+		records: []repo.AuditEventRecord{
+			{
+				ID:              11,
+				Type:            repo.AuditEventOrderSubmitted,
+				TraderID:        "paper",
+				CorrelationID:   "corr-11",
+				Symbol:          "ETH",
+				Action:          "open_long",
+				ApprovalTokenID: "tok-11",
+				Reason:          "limit_ioc",
+				Detail:          json.RawMessage(`{"price":"3100.5","quantity":"1.25","cloid":"order-11"}`),
+				CreatedAt:       older,
+			},
+			{
+				ID:            12,
+				Type:          repo.AuditEventOrderFailed,
+				TraderID:      "paper",
+				CorrelationID: "corr-12",
+				Symbol:        "BTC",
+				Action:        "open_short",
+				Reason:        "market_ioc",
+				Error:         "exchange rejected",
+				Detail:        json.RawMessage(`{"price":90000,"quantity":0.2}`),
+				CreatedAt:     newer,
+			},
+		},
+	}
+	svcCtx := &svc.ServiceContext{AuditEventRepo: auditRepo}
+
+	resp, err := NewOrdersLogic(context.Background(), svcCtx).Orders(&types.OrdersRequest{
+		TraderId: "paper",
+		Symbol:   "eth",
+		Limit:    10,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "read_only", resp.Status)
+	require.Equal(t, "audit_event_repo", resp.Meta.Source)
+	require.Len(t, resp.Orders, 1)
+	require.Equal(t, "audit-11", resp.Orders[0].Id)
+	require.Equal(t, "paper", resp.Orders[0].TraderId)
+	require.Equal(t, "ETH", resp.Orders[0].Symbol)
+	require.Equal(t, "buy", resp.Orders[0].Side)
+	require.Equal(t, "limit_ioc", resp.Orders[0].Type)
+	require.Equal(t, "submitted", resp.Orders[0].Status)
+	require.Equal(t, 1.25, resp.Orders[0].Quantity)
+	require.Equal(t, 3100.5, resp.Orders[0].LimitPrice)
+	require.Equal(t, "corr-11", resp.Orders[0].CorrelationId)
+}
+
+func TestOrdersCanFilterFailedAuditEvents(t *testing.T) {
+	createdAt := time.Date(2026, 5, 1, 1, 1, 0, 0, time.UTC)
+	auditRepo := &fakeAuditEventRepo{
+		records: []repo.AuditEventRecord{
+			{
+				ID:            21,
+				Type:          repo.AuditEventOrderFailed,
+				TraderID:      "paper",
+				CorrelationID: "corr-21",
+				Symbol:        "SOL",
+				Action:        "open_short",
+				Reason:        "market_ioc",
+				Detail:        json.RawMessage(`{"price":150,"quantity":2}`),
+				CreatedAt:     createdAt,
+			},
+		},
+	}
+	svcCtx := &svc.ServiceContext{AuditEventRepo: auditRepo}
+
+	resp, err := NewOrdersLogic(context.Background(), svcCtx).Orders(&types.OrdersRequest{Status: "failed"})
+
+	require.NoError(t, err)
+	require.Len(t, resp.Orders, 1)
+	require.Equal(t, "failed", resp.Orders[0].Status)
+	require.Equal(t, "sell", resp.Orders[0].Side)
+	require.Equal(t, repo.AuditEventOrderFailed, auditRepo.filters[len(auditRepo.filters)-1].Type)
 }
 
 func TestTradingContractControlPaperStartAccepted(t *testing.T) {
@@ -224,6 +307,7 @@ func TestAuditEventsNoRepositoryDegradesSafely(t *testing.T) {
 
 type fakeAuditEventRepo struct {
 	filter  repo.AuditEventListFilter
+	filters []repo.AuditEventListFilter
 	records []repo.AuditEventRecord
 }
 
@@ -233,7 +317,21 @@ func (r *fakeAuditEventRepo) Record(context.Context, repo.AuditEventRecord) (int
 
 func (r *fakeAuditEventRepo) List(ctx context.Context, filter repo.AuditEventListFilter) ([]repo.AuditEventRecord, error) {
 	r.filter = filter
-	return r.records, nil
+	r.filters = append(r.filters, filter)
+	out := make([]repo.AuditEventRecord, 0, len(r.records))
+	for _, record := range r.records {
+		if filter.TraderID != "" && record.TraderID != filter.TraderID {
+			continue
+		}
+		if filter.Type != "" && record.Type != filter.Type {
+			continue
+		}
+		if filter.CorrelationID != "" && record.CorrelationID != filter.CorrelationID {
+			continue
+		}
+		out = append(out, record)
+	}
+	return out, nil
 }
 
 func (r *fakeAuditEventRepo) ListByTrader(context.Context, string, int) ([]repo.AuditEventRecord, error) {

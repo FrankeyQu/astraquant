@@ -12,7 +12,7 @@ This document records the phase-2 REST surface for Web Console and external cont
 | `GET` | `/api/audit-events` | read-only | Filters: `trader_id`, `type`, `correlation_id`, `created_after_rfc3339`, `created_before_rfc3339`, `limit`, `offset`. Returns empty with `source=database_unavailable` if DB is not configured. |
 | `GET` | `/api/trades` | implemented | Existing trade feed plus optional `trader_id`, `symbol`, `side`, `limit`, `offset` filtering. |
 | `GET` | `/api/positions` | implemented | Existing position feed plus optional `trader_id`, `symbol`, `status`, `limit`, `offset`. The file-backed feed currently represents open positions. |
-| `GET` | `/api/orders` | contract-only | Returns `status=not_available` and an empty list until order persistence/service wiring exists. |
+| `GET` | `/api/orders` | read-only | Returns a read-only order stream derived from `order_submitted` / `order_failed` audit events; filters: `trader_id`, `symbol`, `status`, `limit`, `offset`. |
 
 ## Safe Control Plane
 
@@ -51,6 +51,8 @@ Trader lifecycle responses share the shape:
 ```
 
 Decision and order approve/reject endpoints remain intentionally safe placeholders until a real guarded queue exists. They return `accepted=false`, `status=not_implemented`, and `queued=false`.
+
+`GET /api/orders` is intentionally observational. It reads immutable audit events to show submitted/failed order attempts, but it does not imply an order queue exists and does not expose a submission path.
 
 Order preview is preview-only. It normalizes order shape, returns policy-style checks, and never submits or queues an order:
 
