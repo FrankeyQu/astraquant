@@ -5,7 +5,8 @@ package logic
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,11 +15,12 @@ import (
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
 	managerpkg "nof0-api/pkg/manager"
+	"nof0-api/pkg/repo"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-const controlNotImplementedMessage = "control endpoint is contract-only until wired to manager guarded command queue"
+const controlNotImplementedMessage = "control endpoint is not wired to a manager command queue; no order was queued or submitted"
 
 type TradersLogic struct {
 	logx.Logger
@@ -112,36 +114,31 @@ func (l *AuditEventsLogic) AuditEvents(req *types.AuditEventsRequest) (*types.Au
 		req = &types.AuditEventsRequest{}
 	}
 	limit, offset := normalizeLimitOffset(req.Limit, req.Offset, 100)
-	if l.svcCtx.DBConn == nil {
+	if l.svcCtx == nil || l.svcCtx.AuditEventRepo == nil {
 		return &types.AuditEventsResponse{
 			Events:       []types.AuditEvent{},
-			Meta:         listMeta(limit, offset, 0, 0, "database_unavailable"),
+			Meta:         listMeta(limit, offset, 0, 0, "audit_repo_unavailable"),
 			ServerTimeMs: time.Now().UnixMilli(),
 		}, nil
 	}
 
-	where, args, err := auditEventFilters(req)
+	filter, err := auditEventFilters(req)
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`SELECT id, event_type, trader_id, cycle_id, correlation_id, symbol, action, model_id, model_name, prompt_digest, approval_token_id, reason, error_message, detail, created_at
-FROM public.audit_events
-%s
-ORDER BY created_at DESC, id DESC
-LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
-
-	var rows []auditEventRow
-	if err := l.svcCtx.DBConn.QueryRowsCtx(l.ctx, &rows, query, args...); err != nil {
+	filter.Limit = limit
+	filter.Offset = offset
+	records, err := l.svcCtx.AuditEventRepo.List(l.ctx, filter)
+	if err != nil {
 		return nil, err
 	}
-	events := make([]types.AuditEvent, 0, len(rows))
-	for i := range rows {
-		events = append(events, auditEventFromRow(rows[i]))
+	events := make([]types.AuditEvent, 0, len(records))
+	for i := range records {
+		events = append(events, auditEventFromRecord(records[i]))
 	}
 	return &types.AuditEventsResponse{
 		Events:       events,
-		Meta:         listMeta(limit, offset, len(events), offset+len(events), "audit_events"),
+		Meta:         listMeta(limit, offset, len(events), offset+len(events), "audit_event_repo"),
 		ServerTimeMs: time.Now().UnixMilli(),
 	}, nil
 }
@@ -183,18 +180,56 @@ func NewTraderControlLogic(ctx context.Context, svcCtx *svc.ServiceContext) *Tra
 func (l *TraderControlLogic) Control(req *types.TraderControlRequest, action string) (*types.TraderControlResponse, error) {
 	traderID := ""
 	correlationID := ""
+	requestedBy := ""
+	reason := ""
+	idempotencyKey := ""
+	effectiveUntil := ""
 	if req != nil {
 		traderID = req.TraderId
 		correlationID = req.CorrelationId
+		requestedBy = req.RequestedBy
+		reason = req.Reason
+		idempotencyKey = req.IdempotencyKey
+		effectiveUntil = req.EffectiveUntil
+	}
+	control := managerControl(l.svcCtx)
+	if control == nil {
+		return &types.TraderControlResponse{
+			Accepted:         false,
+			Status:           "rejected",
+			TraderId:         traderID,
+			Action:           action,
+			CorrelationId:    correlationID,
+			Queued:           false,
+			ControlPlaneOnly: true,
+			Message:          "manager control plane is not configured",
+			ServerTimeMs:     time.Now().UnixMilli(),
+		}, nil
+	}
+	result, err := control.Handle(l.ctx, managerpkg.ControlRequest{
+		TraderID:       traderID,
+		Action:         managerpkg.ControlAction(action),
+		RequestedBy:    requestedBy,
+		Reason:         reason,
+		IdempotencyKey: idempotencyKey,
+		CorrelationID:  correlationID,
+		EffectiveUntil: effectiveUntil,
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &types.TraderControlResponse{
-		Accepted:      false,
-		Status:        "not_implemented",
-		TraderId:      traderID,
-		Action:        action,
-		CorrelationId: correlationID,
-		Message:       controlNotImplementedMessage,
-		ServerTimeMs:  time.Now().UnixMilli(),
+		Accepted:         result.Accepted,
+		Status:           result.Status,
+		TraderId:         result.TraderID,
+		Action:           string(result.Action),
+		CorrelationId:    result.CorrelationID,
+		ControlState:     string(result.State),
+		ExecutionMode:    string(result.ExecutionMode),
+		Queued:           result.Queued,
+		ControlPlaneOnly: result.ControlPlaneOnly,
+		Message:          result.Message,
+		ServerTimeMs:     time.Now().UnixMilli(),
 	}, nil
 }
 
@@ -221,6 +256,7 @@ func (l *DecisionActionLogic) DecisionAction(req *types.DecisionActionRequest, a
 		DecisionId:    decisionID,
 		Action:        action,
 		CorrelationId: correlationID,
+		Queued:        false,
 		Message:       controlNotImplementedMessage,
 		ServerTimeMs:  time.Now().UnixMilli(),
 	}, nil
@@ -241,11 +277,15 @@ func (l *OrderPreviewLogic) OrderPreview(req *types.OrderPreviewRequest) (*types
 	if req != nil {
 		correlationID = req.CorrelationId
 	}
+	preview := buildOrderPreview(l.svcCtx, req)
 	return &types.OrderPreviewResponse{
-		Accepted:      false,
-		Status:        "not_implemented",
+		Accepted:      preview.accepted,
+		Status:        preview.status,
+		PreviewId:     preview.previewID,
 		CorrelationId: correlationID,
-		Message:       controlNotImplementedMessage,
+		Checks:        preview.checks,
+		Submitted:     false,
+		Message:       preview.message,
 		ServerTimeMs:  time.Now().UnixMilli(),
 	}, nil
 }
@@ -273,27 +313,185 @@ func (l *OrderActionLogic) OrderAction(req *types.OrderActionRequest, action str
 		OrderId:       orderID,
 		Action:        action,
 		CorrelationId: correlationID,
+		Queued:        false,
 		Message:       controlNotImplementedMessage,
 		ServerTimeMs:  time.Now().UnixMilli(),
 	}, nil
 }
 
-type auditEventRow struct {
-	Id              int64          `db:"id"`
-	EventType       string         `db:"event_type"`
-	TraderId        string         `db:"trader_id"`
-	CycleId         sql.NullInt64  `db:"cycle_id"`
-	CorrelationId   sql.NullString `db:"correlation_id"`
-	Symbol          sql.NullString `db:"symbol"`
-	Action          sql.NullString `db:"action"`
-	ModelId         sql.NullString `db:"model_id"`
-	ModelName       sql.NullString `db:"model_name"`
-	PromptDigest    sql.NullString `db:"prompt_digest"`
-	ApprovalTokenId sql.NullString `db:"approval_token_id"`
-	Reason          sql.NullString `db:"reason"`
-	ErrorMessage    sql.NullString `db:"error_message"`
-	Detail          string         `db:"detail"`
-	CreatedAt       time.Time      `db:"created_at"`
+type orderPreviewResult struct {
+	accepted  bool
+	status    string
+	previewID string
+	checks    orderPreviewChecks
+	message   string
+}
+
+type orderPreviewChecks struct {
+	ControlPlaneOnly bool                `json:"control_plane_only"`
+	Submitted        bool                `json:"submitted"`
+	TraderID         string              `json:"trader_id,omitempty"`
+	ExecutionMode    string              `json:"execution_mode,omitempty"`
+	DecisionID       string              `json:"decision_id,omitempty"`
+	Overall          string              `json:"overall"`
+	Checks           []orderPreviewCheck `json:"checks"`
+	NormalizedOrders []orderPreviewOrder `json:"normalized_orders,omitempty"`
+	RiskContext      interface{}         `json:"risk_context,omitempty"`
+}
+
+type orderPreviewCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+type orderPreviewOrder struct {
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side"`
+	Type       string  `json:"type"`
+	Quantity   float64 `json:"quantity"`
+	LimitPrice float64 `json:"limit_price,omitempty"`
+}
+
+func buildOrderPreview(svcCtx *svc.ServiceContext, req *types.OrderPreviewRequest) orderPreviewResult {
+	checks := orderPreviewChecks{
+		ControlPlaneOnly: true,
+		Submitted:        false,
+		Overall:          "rejected",
+		Checks:           []orderPreviewCheck{},
+	}
+	if req == nil {
+		checks.Checks = append(checks.Checks, rejectedPreviewCheck("request_shape", "request body is required"))
+		return orderPreviewResult{
+			accepted: false,
+			status:   "rejected",
+			checks:   checks,
+			message:  "preview rejected; no order was submitted or queued",
+		}
+	}
+	traderID := strings.TrimSpace(req.TraderId)
+	checks.TraderID = traderID
+	checks.DecisionID = strings.TrimSpace(req.DecisionId)
+	checks.RiskContext = req.RiskContext
+	trader, ok := findConfiguredTrader(svcCtx, traderID)
+	if !ok {
+		checks.Checks = append(checks.Checks, rejectedPreviewCheck("trader_exists", fmt.Sprintf("trader %q not found", traderID)))
+		return orderPreviewResult{
+			accepted: false,
+			status:   "rejected",
+			checks:   checks,
+			message:  "preview rejected; no order was submitted or queued",
+		}
+	}
+	checks.ExecutionMode = string(trader.ExecutionMode)
+	checks.Checks = append(checks.Checks, acceptedPreviewCheck("trader_exists", "configured trader found"))
+	switch trader.ExecutionMode {
+	case managerpkg.ExecutionModePaper, managerpkg.ExecutionModeTestnet:
+		checks.Checks = append(checks.Checks, acceptedPreviewCheck("execution_mode", "paper/testnet preview only"))
+	case managerpkg.ExecutionModeLive:
+		checks.Checks = append(checks.Checks, acceptedPreviewCheck("execution_mode", "live trader preview only; no submission path is exposed"))
+	default:
+		checks.Checks = append(checks.Checks, rejectedPreviewCheck("execution_mode", fmt.Sprintf("unsupported execution_mode %q", trader.ExecutionMode)))
+	}
+	if len(req.Orders) == 0 {
+		checks.Checks = append(checks.Checks, rejectedPreviewCheck("orders_present", "at least one order is required"))
+	}
+	for i, order := range req.Orders {
+		normalized, orderChecks := normalizePreviewOrder(i, order)
+		checks.Checks = append(checks.Checks, orderChecks...)
+		if normalized.Symbol != "" || normalized.Side != "" || normalized.Type != "" || normalized.Quantity != 0 || normalized.LimitPrice != 0 {
+			checks.NormalizedOrders = append(checks.NormalizedOrders, normalized)
+		}
+	}
+	rejected := false
+	for _, check := range checks.Checks {
+		if check.Status == "rejected" {
+			rejected = true
+			break
+		}
+	}
+	if rejected {
+		checks.Overall = "rejected"
+		return orderPreviewResult{
+			accepted: false,
+			status:   "rejected",
+			checks:   checks,
+			message:  "preview rejected; no order was submitted or queued",
+		}
+	}
+	checks.Overall = "preview_only"
+	checks.Checks = append(checks.Checks, acceptedPreviewCheck("submission", "preview only; no order was submitted or queued"))
+	return orderPreviewResult{
+		accepted:  true,
+		status:    "preview_only",
+		previewID: previewID(req, checks.NormalizedOrders),
+		checks:    checks,
+		message:   "preview only; no order was submitted or queued",
+	}
+}
+
+func normalizePreviewOrder(index int, order types.Order) (orderPreviewOrder, []orderPreviewCheck) {
+	normalized := orderPreviewOrder{
+		Symbol:     strings.ToUpper(strings.TrimSpace(order.Symbol)),
+		Side:       strings.ToLower(strings.TrimSpace(order.Side)),
+		Type:       strings.ToLower(strings.TrimSpace(order.Type)),
+		Quantity:   order.Quantity,
+		LimitPrice: order.LimitPrice,
+	}
+	checks := []orderPreviewCheck{}
+	prefix := fmt.Sprintf("orders[%d]", index)
+	if normalized.Symbol == "" {
+		checks = append(checks, rejectedPreviewCheck(prefix+".symbol", "symbol is required"))
+	} else {
+		checks = append(checks, acceptedPreviewCheck(prefix+".symbol", "symbol normalized"))
+	}
+	if normalized.Side == "" {
+		checks = append(checks, rejectedPreviewCheck(prefix+".side", "side is required"))
+	} else {
+		checks = append(checks, acceptedPreviewCheck(prefix+".side", "side normalized"))
+	}
+	if normalized.Type == "" {
+		checks = append(checks, rejectedPreviewCheck(prefix+".type", "type is required"))
+	} else {
+		checks = append(checks, acceptedPreviewCheck(prefix+".type", "type normalized"))
+	}
+	if normalized.Quantity <= 0 {
+		checks = append(checks, rejectedPreviewCheck(prefix+".quantity", "quantity must be positive"))
+	} else {
+		checks = append(checks, acceptedPreviewCheck(prefix+".quantity", "quantity is positive"))
+	}
+	if strings.Contains(normalized.Type, "limit") && normalized.LimitPrice <= 0 {
+		checks = append(checks, rejectedPreviewCheck(prefix+".limit_price", "limit orders require a positive limit_price"))
+	}
+	if normalized.LimitPrice < 0 {
+		checks = append(checks, rejectedPreviewCheck(prefix+".limit_price", "limit_price cannot be negative"))
+	}
+	return normalized, checks
+}
+
+func acceptedPreviewCheck(name, message string) orderPreviewCheck {
+	return orderPreviewCheck{Name: name, Status: "accepted", Message: message}
+}
+
+func rejectedPreviewCheck(name, message string) orderPreviewCheck {
+	return orderPreviewCheck{Name: name, Status: "rejected", Message: message}
+}
+
+func previewID(req *types.OrderPreviewRequest, orders []orderPreviewOrder) string {
+	payload := struct {
+		TraderID      string              `json:"trader_id"`
+		DecisionID    string              `json:"decision_id,omitempty"`
+		CorrelationID string              `json:"correlation_id,omitempty"`
+		Orders        []orderPreviewOrder `json:"orders"`
+	}{
+		TraderID:      strings.TrimSpace(req.TraderId),
+		DecisionID:    strings.TrimSpace(req.DecisionId),
+		CorrelationID: strings.TrimSpace(req.CorrelationId),
+		Orders:        orders,
+	}
+	data, _ := json.Marshal(payload)
+	sum := sha256.Sum256(data)
+	return "preview-" + hex.EncodeToString(sum[:8])
 }
 
 func configuredTraders(svcCtx *svc.ServiceContext) []managerpkg.TraderConfig {
@@ -301,6 +499,19 @@ func configuredTraders(svcCtx *svc.ServiceContext) []managerpkg.TraderConfig {
 		return nil
 	}
 	return svcCtx.ManagerConfig.Traders
+}
+
+func managerControl(svcCtx *svc.ServiceContext) *managerpkg.ControlPlane {
+	if svcCtx == nil {
+		return nil
+	}
+	if svcCtx.ManagerControl != nil {
+		return svcCtx.ManagerControl
+	}
+	if svcCtx.ManagerConfig == nil {
+		return nil
+	}
+	return managerpkg.NewControlPlane(svcCtx.ManagerConfig, svcCtx.TraderRuntimeRepo)
 }
 
 func findConfiguredTrader(svcCtx *svc.ServiceContext, traderID string) (managerpkg.TraderConfig, bool) {
@@ -371,6 +582,11 @@ func traderStatusFromContext(ctx context.Context, svcCtx *svc.ServiceContext, tr
 		Status:              "configured",
 		ActiveConfigVersion: trader.Version,
 	}
+	if svcCtx != nil && svcCtx.ManagerControl != nil {
+		if snapshot, ok := svcCtx.ManagerControl.Snapshot(trader.ID); ok {
+			return traderStatusFromControlSnapshot(trader, snapshot)
+		}
+	}
 	if svcCtx == nil || svcCtx.TraderRuntimeRepo == nil {
 		return status
 	}
@@ -407,6 +623,31 @@ func traderStatusFromContext(ctx context.Context, svcCtx *svc.ServiceContext, tr
 	return status
 }
 
+func traderStatusFromControlSnapshot(trader managerpkg.TraderConfig, snapshot managerpkg.ControlStateSnapshot) types.TraderStatus {
+	status := types.TraderStatus{
+		TraderId:            trader.ID,
+		Status:              string(snapshot.State),
+		IsRunning:           snapshot.State == managerpkg.TraderStateRunning,
+		ActiveConfigVersion: snapshot.ActiveConfigVersion,
+		UpdatedAt:           formatRFC3339(snapshot.UpdatedAt),
+		Detail: map[string]any{
+			"control_plane_only": true,
+			"last_action":        string(snapshot.LastAction),
+			"correlation_id":     snapshot.CorrelationID,
+			"requested_by":       snapshot.RequestedBy,
+			"reason":             snapshot.Reason,
+		},
+	}
+	if status.ActiveConfigVersion == 0 {
+		status.ActiveConfigVersion = trader.Version
+	}
+	if snapshot.PauseUntil != nil {
+		status.PausedUntil = formatRFC3339(*snapshot.PauseUntil)
+	}
+	status.PauseReason = snapshot.PauseReason
+	return status
+}
+
 func promptDigest(svcCtx *svc.ServiceContext, traderID string) string {
 	if svcCtx == nil || svcCtx.ManagerPromptDigests == nil {
 		return ""
@@ -414,63 +655,55 @@ func promptDigest(svcCtx *svc.ServiceContext, traderID string) string {
 	return svcCtx.ManagerPromptDigests[traderID]
 }
 
-func auditEventFilters(req *types.AuditEventsRequest) (string, []any, error) {
-	var filters []string
-	var args []any
-	add := func(clause string, value any) {
-		args = append(args, value)
-		filters = append(filters, fmt.Sprintf(clause, len(args)))
-	}
+func auditEventFilters(req *types.AuditEventsRequest) (repo.AuditEventListFilter, error) {
+	var filter repo.AuditEventListFilter
 	if v := strings.TrimSpace(req.TraderId); v != "" {
-		add("trader_id = $%d", v)
+		filter.TraderID = v
 	}
 	if v := strings.TrimSpace(req.Type); v != "" {
-		add("event_type = $%d", v)
+		filter.Type = repo.AuditEventType(v)
 	}
 	if v := strings.TrimSpace(req.CorrelationId); v != "" {
-		add("correlation_id = $%d", v)
+		filter.CorrelationID = v
 	}
 	if v := strings.TrimSpace(req.CreatedAfterRfc3339); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return "", nil, fmt.Errorf("created_after_rfc3339 must be RFC3339: %w", err)
+			return filter, fmt.Errorf("created_after_rfc3339 must be RFC3339: %w", err)
 		}
-		add("created_at >= $%d", t)
+		filter.CreatedAfter = &t
 	}
 	if v := strings.TrimSpace(req.CreatedBeforeRfc3339); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return "", nil, fmt.Errorf("created_before_rfc3339 must be RFC3339: %w", err)
+			return filter, fmt.Errorf("created_before_rfc3339 must be RFC3339: %w", err)
 		}
-		add("created_at <= $%d", t)
+		filter.CreatedBefore = &t
 	}
-	if len(filters) == 0 {
-		return "", args, nil
-	}
-	return "WHERE " + strings.Join(filters, " AND "), args, nil
+	return filter, nil
 }
 
-func auditEventFromRow(row auditEventRow) types.AuditEvent {
+func auditEventFromRecord(row repo.AuditEventRecord) types.AuditEvent {
 	var detail any
-	if strings.TrimSpace(row.Detail) != "" {
-		if err := json.Unmarshal([]byte(row.Detail), &detail); err != nil {
+	if len(row.Detail) > 0 {
+		if err := json.Unmarshal(row.Detail, &detail); err != nil {
 			detail = row.Detail
 		}
 	}
 	event := types.AuditEvent{
-		Id:              row.Id,
-		Type:            row.EventType,
-		TraderId:        row.TraderId,
-		CycleId:         row.CycleId.Int64,
-		CorrelationId:   row.CorrelationId.String,
-		Symbol:          row.Symbol.String,
-		Action:          row.Action.String,
-		ModelId:         row.ModelId.String,
-		ModelName:       row.ModelName.String,
-		PromptDigest:    row.PromptDigest.String,
-		ApprovalTokenId: row.ApprovalTokenId.String,
-		Reason:          row.Reason.String,
-		Error:           row.ErrorMessage.String,
+		Id:              row.ID,
+		Type:            string(row.Type),
+		TraderId:        row.TraderID,
+		CycleId:         row.CycleID,
+		CorrelationId:   row.CorrelationID,
+		Symbol:          row.Symbol,
+		Action:          row.Action,
+		ModelId:         row.ModelID,
+		ModelName:       row.ModelName,
+		PromptDigest:    row.PromptDigest,
+		ApprovalTokenId: row.ApprovalTokenID,
+		Reason:          row.Reason,
+		Error:           row.Error,
 		Detail:          detail,
 		CreatedAt:       formatRFC3339(row.CreatedAt),
 	}

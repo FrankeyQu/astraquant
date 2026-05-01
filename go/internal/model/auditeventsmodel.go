@@ -35,10 +35,22 @@ type AuditEvents struct {
 }
 
 type (
+	// AuditEventsFilter captures supported query constraints for audit event reads.
+	AuditEventsFilter struct {
+		TraderID      string
+		EventType     string
+		CorrelationID string
+		CreatedAfter  *time.Time
+		CreatedBefore *time.Time
+		Limit         int
+		Offset        int
+	}
+
 	// AuditEventsModel is an interface to be customized, add more methods here,
 	// and implement the added methods in customAuditEventsModel.
 	AuditEventsModel interface {
 		Insert(ctx context.Context, data *AuditEvents) (int64, error)
+		List(ctx context.Context, filter AuditEventsFilter) ([]*AuditEvents, error)
 		ListByTrader(ctx context.Context, traderID string, limit int) ([]*AuditEvents, error)
 	}
 
@@ -102,19 +114,50 @@ func (m *customAuditEventsModel) Insert(ctx context.Context, data *AuditEvents) 
 }
 
 func (m *customAuditEventsModel) ListByTrader(ctx context.Context, traderID string, limit int) ([]*AuditEvents, error) {
+	return m.List(ctx, AuditEventsFilter{TraderID: traderID, Limit: limit})
+}
+
+func (m *customAuditEventsModel) List(ctx context.Context, filter AuditEventsFilter) ([]*AuditEvents, error) {
 	if m == nil || m.conn == nil {
 		return nil, sql.ErrConnDone
 	}
-	traderID = strings.TrimSpace(traderID)
-	if traderID == "" {
-		return nil, nil
+	if filter.Limit <= 0 || filter.Limit > 500 {
+		filter.Limit = 100
 	}
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	if filter.Offset < 0 {
+		filter.Offset = 0
 	}
-	query := fmt.Sprintf(`SELECT %s FROM public.audit_events WHERE trader_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`, auditEventsRows)
+
+	var clauses []string
+	var args []any
+	add := func(clause string, value any) {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf(clause, len(args)))
+	}
+	if v := strings.TrimSpace(filter.TraderID); v != "" {
+		add("trader_id = $%d", v)
+	}
+	if v := strings.TrimSpace(filter.EventType); v != "" {
+		add("event_type = $%d", v)
+	}
+	if v := strings.TrimSpace(filter.CorrelationID); v != "" {
+		add("correlation_id = $%d", v)
+	}
+	if filter.CreatedAfter != nil {
+		add("created_at >= $%d", filter.CreatedAfter.UTC())
+	}
+	if filter.CreatedBefore != nil {
+		add("created_at <= $%d", filter.CreatedBefore.UTC())
+	}
+
+	where := ""
+	if len(clauses) > 0 {
+		where = "WHERE " + strings.Join(clauses, " AND ")
+	}
+	args = append(args, filter.Limit, filter.Offset)
+	query := fmt.Sprintf(`SELECT %s FROM public.audit_events %s ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`, auditEventsRows, where, len(args)-1, len(args))
 	var rows []AuditEvents
-	if err := m.conn.QueryRowsCtx(ctx, &rows, query, traderID, limit); err != nil {
+	if err := m.conn.QueryRowsCtx(ctx, &rows, query, args...); err != nil {
 		return nil, err
 	}
 	out := make([]*AuditEvents, 0, len(rows))
