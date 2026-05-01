@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,11 +160,24 @@ func (l *OrdersLogic) Orders(req *types.OrdersRequest) (*types.OrdersResponse, e
 	if req != nil {
 		limit, offset = normalizeLimitOffset(req.Limit, req.Offset, 100)
 	}
+	if l.svcCtx == nil || l.svcCtx.AuditEventRepo == nil {
+		return &types.OrdersResponse{
+			Orders:       []types.Order{},
+			Meta:         listMeta(limit, offset, 0, 0, "audit_repo_unavailable"),
+			Status:       "not_available",
+			Message:      "orders read model requires audit event repository wiring",
+			ServerTimeMs: time.Now().UnixMilli(),
+		}, nil
+	}
+	orders, totalSeen, err := ordersFromAuditEvents(l.ctx, l.svcCtx.AuditEventRepo, req, limit, offset)
+	if err != nil {
+		return nil, err
+	}
 	return &types.OrdersResponse{
-		Orders:       []types.Order{},
-		Meta:         listMeta(limit, offset, 0, 0, "orders_not_wired"),
-		Status:       "not_available",
-		Message:      "orders query contract is defined; persistence/service wiring is pending",
+		Orders:       orders,
+		Meta:         listMeta(limit, offset, len(orders), totalSeen, "audit_event_repo"),
+		Status:       "read_only",
+		Message:      "orders are derived from immutable audit events; no order action endpoint submits or queues orders",
 		ServerTimeMs: time.Now().UnixMilli(),
 	}, nil
 }
@@ -708,6 +723,194 @@ func auditEventFromRecord(row repo.AuditEventRecord) types.AuditEvent {
 		CreatedAt:       formatRFC3339(row.CreatedAt),
 	}
 	return event
+}
+
+func ordersFromAuditEvents(ctx context.Context, auditRepo repo.AuditEventRepository, req *types.OrdersRequest, limit, offset int) ([]types.Order, int, error) {
+	if auditRepo == nil {
+		return []types.Order{}, 0, nil
+	}
+	if req == nil {
+		req = &types.OrdersRequest{}
+	}
+	eventTypes := orderEventTypesForStatus(req.Status)
+	if len(eventTypes) == 0 {
+		return []types.Order{}, 0, nil
+	}
+	scanLimit := limit + offset
+	if scanLimit <= 0 {
+		scanLimit = 100
+	}
+	if scanLimit > 500 {
+		scanLimit = 500
+	}
+	var records []repo.AuditEventRecord
+	for _, eventType := range eventTypes {
+		rows, err := auditRepo.List(ctx, repo.AuditEventListFilter{
+			TraderID: strings.TrimSpace(req.TraderId),
+			Type:     eventType,
+			Limit:    scanLimit,
+			Offset:   0,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		records = append(records, rows...)
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
+			return records[i].ID > records[j].ID
+		}
+		return records[i].CreatedAt.After(records[j].CreatedAt)
+	})
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	filtered := make([]types.Order, 0, len(records))
+	for _, record := range records {
+		order := orderFromAuditEvent(record)
+		if symbol != "" && strings.ToUpper(order.Symbol) != symbol {
+			continue
+		}
+		filtered = append(filtered, order)
+	}
+	totalSeen := len(filtered)
+	return paginateOrders(filtered, limit, offset), totalSeen, nil
+}
+
+func orderEventTypesForStatus(status string) []repo.AuditEventType {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "all":
+		return []repo.AuditEventType{repo.AuditEventOrderSubmitted, repo.AuditEventOrderFailed}
+	case "submitted", "sent", "filled", "open", string(repo.AuditEventOrderSubmitted):
+		return []repo.AuditEventType{repo.AuditEventOrderSubmitted}
+	case "failed", "error", "rejected", string(repo.AuditEventOrderFailed):
+		return []repo.AuditEventType{repo.AuditEventOrderFailed}
+	default:
+		return nil
+	}
+}
+
+func orderFromAuditEvent(record repo.AuditEventRecord) types.Order {
+	detail := auditDetailMap(record.Detail)
+	order := types.Order{
+		Id:            fmt.Sprintf("audit-%d", record.ID),
+		TraderId:      record.TraderID,
+		Symbol:        strings.ToUpper(strings.TrimSpace(record.Symbol)),
+		Side:          sideFromAuditAction(record.Action),
+		Type:          orderTypeFromAuditReason(record.Reason),
+		Status:        orderStatusFromAuditType(record.Type),
+		Quantity:      detailFloat(detail, "quantity"),
+		LimitPrice:    detailFloat(detail, "price"),
+		CreatedAt:     formatRFC3339(record.CreatedAt),
+		UpdatedAt:     formatRFC3339(record.CreatedAt),
+		CorrelationId: record.CorrelationID,
+		Detail:        detail,
+	}
+	if order.Symbol == "" {
+		order.Symbol = strings.ToUpper(detailString(detail, "symbol"))
+	}
+	if order.Quantity == 0 {
+		order.Quantity = detailFloat(detail, "size")
+	}
+	if order.LimitPrice == 0 {
+		order.LimitPrice = detailFloat(detail, "limit_price")
+	}
+	if action := strings.ToLower(strings.TrimSpace(record.Action)); action != "" {
+		detail["action"] = action
+	}
+	if record.ApprovalTokenID != "" {
+		detail["approval_token_id"] = record.ApprovalTokenID
+	}
+	detail["audit_event_id"] = record.ID
+	return order
+}
+
+func auditDetailMap(raw json.RawMessage) map[string]any {
+	detail := map[string]any{}
+	if len(raw) == 0 {
+		return detail
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return map[string]any{"raw_detail": string(raw)}
+	}
+	return detail
+}
+
+func orderStatusFromAuditType(eventType repo.AuditEventType) string {
+	if eventType == repo.AuditEventOrderFailed {
+		return "failed"
+	}
+	return "submitted"
+}
+
+func orderTypeFromAuditReason(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch reason {
+	case "market_ioc":
+		return "market_ioc"
+	case "limit_ioc":
+		return "limit_ioc"
+	case "close_position":
+		return "close"
+	default:
+		return reason
+	}
+}
+
+func sideFromAuditAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "open_long", "close_short":
+		return "buy"
+	case "open_short", "close_long":
+		return "sell"
+	default:
+		return strings.ToLower(strings.TrimSpace(action))
+	}
+}
+
+func detailFloat(detail map[string]any, key string) float64 {
+	value, ok := detail[key]
+	if !ok {
+		return 0
+	}
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return f
+	default:
+		return 0
+	}
+}
+
+func detailString(detail map[string]any, key string) string {
+	value, ok := detail[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprintf("%v", value)
+}
+
+func paginateOrders(items []types.Order, limit, offset int) []types.Order {
+	if offset >= len(items) {
+		return []types.Order{}
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end]
 }
 
 func normalizeLimitOffset(limit, offset, defaultLimit int) (int, int) {
