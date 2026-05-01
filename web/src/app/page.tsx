@@ -19,6 +19,7 @@ export default function Home() {
             <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
               <TabButton name="持仓" tabKey="positions" />
               <TabButton name="模型对话" tabKey="chat" />
+              <TabButton name="交易员" tabKey="traders" />
               <TabButton name="成交" tabKey="trades" />
               <TabButton name="订单" tabKey="orders" />
               <TabButton name="审计" tabKey="audit" />

@@ -14,6 +14,7 @@ const TTL_BY_SEGMENT: Record<string, number> = {
   // live but not tick-by-tick - align to 10s client polling
   "account-totals": 10,
   positions: 10,
+  traders: 10,
   orders: 10,
   "audit-events": 10,
   conversations: 30,
@@ -35,6 +36,7 @@ function cacheHeaderFor(pathParts: string[]): string {
     seg === "crypto-prices" ||
     seg === "account-totals" ||
     seg === "positions" ||
+    seg === "traders" ||
     seg === "orders" ||
     seg === "audit-events" ||
     seg === "trades"

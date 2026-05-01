@@ -126,11 +126,20 @@ PR 地址：
 
 - `https://github.com/FrankeyQu/astraquant/pull/new/codex/web-audit-events-panel`
 
+### 6. Web Console 交易员面板（已完成）
+
+当前状态：
+
+- 已完成 `codex/web-traders-panel`。
+- 接入 `GET /api/traders`、`GET /api/traders/:traderId/status`，并用只读详情补齐提示词摘要与账户快照字段。
+- UI 维持密集、中文标签、低风险只读风格，支持状态筛选和 execution_mode 筛选。
+- 已完成本地 `eslint` 与 `npm run build` 验证，准备 commit/push。
+
 ## 当前分支堆叠关系
 
 当前工作分支：
 
-- `codex/web-audit-events-panel`
+- `codex/web-traders-panel`
 
 当前堆叠链路：
 
@@ -139,6 +148,7 @@ main
   -> codex/orders-audit-readmodel
   -> codex/web-orders-panel
   -> codex/web-audit-events-panel
+  -> codex/web-traders-panel
 ```
 
 对应能力链路：
@@ -148,6 +158,7 @@ Audit events persistence/query
   -> audit-backed readonly orders API
   -> Web orders panel
   -> Web audit events panel
+  -> Web trader panel
 ```
 
 ## 当前系统能力快照
@@ -186,7 +197,7 @@ Audit events persistence/query
 待加强：
 
 - 全量 ESLint 仍有较多历史问题，需要单独 cleanup 分支。
-- 控制台可继续补 trader 列表/详情、runtime status、execution mode 提示。
+- 控制台可继续补 Playwright 冒烟测试、筛选记忆与更细的只读状态展示。
 - 审计/订单面板可以继续增加 trader/symbol/correlation 搜索，但仍应保持只读。
 - 需要 Playwright 冒烟测试覆盖关键页面和 tabs。
 
@@ -221,10 +232,9 @@ npm run build
 优先级从高到低：
 
 1. 合并当前三段堆叠分支，或创建一个集成 PR，把 orders API、订单面板、审计面板放到同一条 review 线中。
-2. 新开 `codex/web-traders-panel`：接入 `GET /api/traders`、`GET /api/traders/:id/status`，展示 trader runtime/execution mode/risk params。
-3. 新开 `codex/web-lint-cleanup`：只清理 Web 全量 lint 的既有问题，不混入功能。
-4. 新开 `codex/control-plane-smoke-tests`：为 safe control-plane endpoints 增加更完整的 handler/API smoke tests。
-5. 继续补 Paper Exchange 行为测试，尤其是手续费、滑点、保证金和 close/reduce-only 语义。
+2. 新开 `codex/web-lint-cleanup`：只清理 Web 全量 lint 的既有问题，不混入功能。
+3. 新开 `codex/control-plane-smoke-tests`：为 safe control-plane endpoints 增加更完整的 handler/API smoke tests。
+4. 继续补 Paper Exchange 行为测试，尤其是手续费、滑点、保证金和 close/reduce-only 语义。
 
 ## 安全边界提醒
 
@@ -235,4 +245,3 @@ npm run build
 - 任何 live trading 路径都必须显式门禁，默认拒绝。
 - 审计、订单、trader runtime 页面默认只读。
 - approve/reject 在真实 guarded queue 完成前继续保持安全占位。
-
