@@ -1,0 +1,50 @@
+Name: nof0-e2e
+Env: dev
+Host: 0.0.0.0
+Port: 8888
+DataPath: ../mcp/data
+
+# E2E profile intentionally leaves Postgres and Redis disabled.
+# It is meant for local control-plane/API smoke tests, not persistence tests.
+Postgres:
+  DataSource: ""
+  MaxOpen: 5
+  MaxIdle: 2
+  MaxLifetime: 5m
+
+Cache: []
+
+TTL:
+  Short: 10
+  Medium: 60
+  Long: 300
+
+Logging:
+  SlowThreshold:
+    SQL: 10000
+    Redis: 5000
+  VerboseSQL: false
+  VerboseLLM: false
+
+LLM:
+  File: llm.e2e.yaml
+
+Executor:
+  File: executor.yaml
+
+Manager:
+  File: manager.e2e.yaml
+
+Exchange:
+  File: exchange.e2e.yaml
+
+Market:
+  File: market.e2e.yaml
+
+Cors:
+  AllowOrigins: ['*']
+  AllowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+  AllowHeaders: ['Content-Type', 'Authorization']
+  ExposeHeaders: ['Content-Length']
+  AllowCredentials: false
+  MaxAge: 3600

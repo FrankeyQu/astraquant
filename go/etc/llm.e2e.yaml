@@ -1,0 +1,22 @@
+base_url: "http://127.0.0.1:9/v1"
+api_key: "e2e-dummy-key"
+default_model: "e2e-dummy"
+timeout: "5s"
+max_retries: 0
+log_level: "warn"
+
+models:
+  e2e-dummy:
+    provider: "dummy"
+    model_name: "e2e-dummy"
+    temperature: 0
+    max_completion_tokens: 256
+    priority: 1
+    cost_tier: low
+
+budget:
+  daily_token_limit: 1000
+  alert_threshold_pct: 80
+  strict_enforcement: false
+  cost_per_million_tokens:
+    e2e-dummy: 0

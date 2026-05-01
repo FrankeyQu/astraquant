@@ -38,6 +38,21 @@ $env:ASTRAQUANT_HYPERLIQUID_PRIVATE_KEY = "0x00000000000000000000000000000000000
 go run nof0.go
 ```
 
+新增 E2E profile 后，可以改用 paper-only 配置启动；该方式不需要 `ZENMUX_API_KEY` 或 Hyperliquid 私钥：
+
+```powershell
+cd D:\PRJ\lianghua\nof0-e2e\go
+$env:CGO_ENABLED = "0"
+go run nof0.go -f etc/nof0.e2e.yaml
+```
+
+该 profile 使用：
+
+- `manager.e2e.yaml`：两个 `paper` trader，`auto_start=false`
+- `exchange.e2e.yaml`：只加载 `paper_trading` sim provider
+- `llm.e2e.yaml`：dummy LLM endpoint/key，不会误用真实模型 key
+- `market.e2e.yaml`：保留 Hyperliquid testnet market provider，启动时不需要密钥
+
 Web 代理联调：
 
 ```powershell
