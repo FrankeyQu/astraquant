@@ -15,6 +15,7 @@ const TTL_BY_SEGMENT: Record<string, number> = {
   "account-totals": 10,
   positions: 10,
   orders: 10,
+  "audit-events": 10,
   conversations: 30,
   leaderboard: 60,
   // time-aligned to 10s along with other live-ish endpoints
@@ -35,6 +36,7 @@ function cacheHeaderFor(pathParts: string[]): string {
     seg === "account-totals" ||
     seg === "positions" ||
     seg === "orders" ||
+    seg === "audit-events" ||
     seg === "trades"
   ) {
     // Align CDN cache to 10s boundaries to match client-side time alignment

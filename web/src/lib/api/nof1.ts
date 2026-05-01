@@ -17,6 +17,16 @@ export const endpoints = {
     const qs = query.toString();
     return local(`/orders${qs ? `?${qs}` : ""}`);
   },
+  auditEvents: (
+    params: { type?: string; limit?: number; offset?: number } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (params.type && params.type !== "ALL") query.set("type", params.type);
+    if (params.limit != null) query.set("limit", String(params.limit));
+    if (params.offset != null) query.set("offset", String(params.offset));
+    const qs = query.toString();
+    return local(`/audit-events${qs ? `?${qs}` : ""}`);
+  },
   accountTotals: (lastHourlyMarker?: number) =>
     local(
       `/account-totals${lastHourlyMarker != null ? `?lastHourlyMarker=${lastHourlyMarker}` : ""}`,
