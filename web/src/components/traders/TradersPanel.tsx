@@ -1,6 +1,10 @@
 "use client";
+import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useSWRConfig } from "swr";
+import Modal from "@/components/ui/Modal";
 import ErrorBanner from "@/components/ui/ErrorBanner";
+import { endpoints, fetcher } from "@/lib/api/nof1";
 import {
   type TraderExecutionModeFilter,
   type TraderRow,
@@ -8,6 +12,10 @@ import {
   useTraderStatus,
   useTraders,
 } from "@/lib/api/hooks/useTraders";
+import type {
+  OrderPreviewResponse,
+  TraderControlResponse,
+} from "@/lib/api/types";
 import { fmtUSD, pnlClass } from "@/lib/utils/formatters";
 
 const TRADER_STATUS_KEY = "trader_status";
@@ -30,10 +38,13 @@ const MODE_OPTIONS: Array<{ value: TraderExecutionModeFilter; label: string }> =
     { value: "live", label: "实盘" },
   ];
 
+type ControlAction = "start" | "pause" | "resume" | "stop";
+
 export default function TradersPanel() {
   const search = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+  const { mutate } = useSWRConfig();
   const statusFilter = normalizeStatus(search.get(TRADER_STATUS_KEY));
   const modeFilter = normalizeMode(search.get(MODE_KEY));
   const selectedTraderId = search.get(TRADER_ID_KEY)?.trim() || "";
@@ -47,6 +58,141 @@ export default function TradersPanel() {
   const selectedTrader =
     traders.find((trader) => trader.id === selectedTraderId) ?? null;
   const snapshot = statusSnapshot ?? selectedTrader?.statusSnapshot ?? null;
+  const [actionBusy, setActionBusy] = useState<ControlAction | null>(null);
+  const [actionError, setActionError] = useState<string>("");
+  const [actionResult, setActionResult] = useState<TraderControlResponse | null>(
+    null,
+  );
+  const [requestedBy, setRequestedBy] = useState("web-console");
+  const [reason, setReason] = useState("");
+  const [effectiveUntil, setEffectiveUntil] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [previewResult, setPreviewResult] =
+    useState<OrderPreviewResponse | null>(null);
+  const [previewForm, setPreviewForm] = useState({
+    side: "buy",
+    type: "market",
+    symbol: "",
+    quantity: "1",
+    limitPrice: "",
+    decisionId: "",
+    correlationId: "",
+    riskContext: "",
+  });
+  const traderListKey = useMemo(
+    () =>
+      endpoints.traders({
+        status: statusFilter,
+        executionMode: modeFilter,
+        limit: 100,
+      }),
+    [modeFilter, statusFilter],
+  );
+  const traderStatusKey = selectedTraderId
+    ? endpoints.traderStatus(selectedTraderId)
+    : null;
+  const selectedControlState = (
+    snapshot?.status || selectedTrader?.status || "configured"
+  ).toLowerCase();
+  const selectedExecutionMode = (
+    selectedTrader?.executionMode || ""
+  ).toLowerCase();
+  const isLiveTrader = selectedExecutionMode === "live";
+
+  async function refreshTraderState() {
+    await Promise.all([
+      mutate(traderListKey),
+      traderStatusKey ? mutate(traderStatusKey) : Promise.resolve(),
+    ]);
+  }
+
+  async function submitControl(action: ControlAction) {
+    if (!selectedTrader) return;
+    setActionBusy(action);
+    setActionError("");
+    setActionResult(null);
+    try {
+      const payload = await fetcher<TraderControlResponse>(
+        endpoints.traderControl(selectedTrader.id, action),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            trader_id: selectedTrader.id,
+            requested_by: requestedBy.trim() || "web-console",
+            reason: reason.trim(),
+            effective_until:
+              action === "pause" && effectiveUntil.trim()
+                ? effectiveUntil.trim()
+                : undefined,
+          }),
+        },
+      );
+      setActionResult(payload);
+      await refreshTraderState();
+    } catch (error) {
+      setActionError(formatError(error));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function submitPreview() {
+    if (!selectedTrader) return;
+    setPreviewBusy(true);
+    setPreviewError("");
+    setPreviewResult(null);
+    try {
+      const quantity = Number(previewForm.quantity);
+      if (!previewForm.symbol.trim()) {
+        throw new Error("标的不能为空");
+      }
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error("数量必须为正数");
+      }
+      const limitPrice = previewForm.limitPrice.trim()
+        ? Number(previewForm.limitPrice)
+        : undefined;
+      if (
+        previewForm.limitPrice.trim() &&
+        (!Number.isFinite(limitPrice) || (limitPrice ?? 0) <= 0)
+      ) {
+        throw new Error("限价必须为正数");
+      }
+      const riskContext = previewForm.riskContext.trim()
+        ? JSON.parse(previewForm.riskContext)
+        : undefined;
+      const payload = await fetcher<OrderPreviewResponse>(
+        endpoints.orderPreview(),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            trader_id: selectedTrader.id,
+            decision_id: previewForm.decisionId.trim() || undefined,
+            correlation_id: previewForm.correlationId.trim() || undefined,
+            orders: [
+              {
+                symbol: previewForm.symbol.trim().toUpperCase(),
+                side: previewForm.side,
+                type: previewForm.type,
+                quantity,
+                ...(limitPrice != null ? { limit_price: limitPrice } : {}),
+              },
+            ],
+            risk_context: riskContext,
+          }),
+        },
+      );
+      setPreviewResult(payload);
+    } catch (error) {
+      setPreviewError(formatError(error));
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
 
   return (
     <div
@@ -243,6 +389,172 @@ export default function TradersPanel() {
               </div>
 
               <div
+                className="rounded border px-3 py-3 space-y-3"
+                style={{ borderColor: "var(--panel-border)" }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div
+                    className="text-[11px] uppercase tracking-[0.12em]"
+                    style={{ color: "var(--muted-text)" }}
+                  >
+                    控制面
+                  </div>
+                  <div
+                    className="text-[11px] tabular-nums"
+                    style={{ color: "var(--muted-text)" }}
+                  >
+                    {selectedExecutionMode || "--"} · {selectedControlState}
+                  </div>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <label className="space-y-1">
+                    <div
+                      className="text-[11px] uppercase tracking-[0.12em]"
+                      style={{ color: "var(--muted-text)" }}
+                    >
+                      请求人
+                    </div>
+                    <input
+                      className="w-full rounded border px-2 py-1 text-xs"
+                      style={{
+                        background: "var(--panel-bg)",
+                        borderColor: "var(--panel-border)",
+                        color: "var(--foreground)",
+                      }}
+                      value={requestedBy}
+                      onChange={(e) => setRequestedBy(e.target.value)}
+                      placeholder="web-console"
+                    />
+                  </label>
+                  <label className="space-y-1 sm:col-span-2">
+                    <div
+                      className="text-[11px] uppercase tracking-[0.12em]"
+                      style={{ color: "var(--muted-text)" }}
+                    >
+                      原因
+                    </div>
+                    <input
+                      className="w-full rounded border px-2 py-1 text-xs"
+                      style={{
+                        background: "var(--panel-bg)",
+                        borderColor: "var(--panel-border)",
+                        color: "var(--foreground)",
+                      }}
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      placeholder="manual control"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                  <label className="space-y-1">
+                    <div
+                      className="text-[11px] uppercase tracking-[0.12em]"
+                      style={{ color: "var(--muted-text)" }}
+                    >
+                      暂停截止
+                    </div>
+                    <input
+                      className="w-full rounded border px-2 py-1 text-xs"
+                      style={{
+                        background: "var(--panel-bg)",
+                        borderColor: "var(--panel-border)",
+                        color: "var(--foreground)",
+                      }}
+                      value={effectiveUntil}
+                      onChange={(e) => setEffectiveUntil(e.target.value)}
+                      placeholder="2026-05-02T12:30:00Z"
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <ControlButton
+                      label="启动"
+                      disabled={
+                        !selectedTrader ||
+                        !!actionBusy ||
+                        isLiveTrader
+                      }
+                      busy={actionBusy === "start"}
+                      onClick={() => void submitControl("start")}
+                    />
+                    <ControlButton
+                      label="暂停"
+                      disabled={!selectedTrader || !!actionBusy}
+                      busy={actionBusy === "pause"}
+                      onClick={() => void submitControl("pause")}
+                    />
+                    <ControlButton
+                      label="恢复"
+                      disabled={!selectedTrader || !!actionBusy || isLiveTrader}
+                      busy={actionBusy === "resume"}
+                      onClick={() => void submitControl("resume")}
+                    />
+                    <ControlButton
+                      label="停止"
+                      disabled={!selectedTrader || !!actionBusy}
+                      busy={actionBusy === "stop"}
+                      onClick={() => void submitControl("stop")}
+                    />
+                  </div>
+                  <div className="flex items-end justify-end">
+                    <button
+                      type="button"
+                      className="rounded border px-3 py-1 text-xs chip-btn"
+                      style={{
+                        borderColor: "var(--panel-border)",
+                        color: "var(--foreground)",
+                      }}
+                      onClick={() => setPreviewOpen(true)}
+                      disabled={!selectedTrader}
+                    >
+                      订单预览
+                    </button>
+                  </div>
+                </div>
+
+                {actionError ? (
+                  <div
+                    className="rounded border px-2 py-2 text-xs"
+                    style={{
+                      borderColor: "color-mix(in oklab, red 30%, transparent)",
+                      background: "color-mix(in oklab, red 10%, transparent)",
+                      color: "red",
+                    }}
+                  >
+                    {actionError}
+                  </div>
+                ) : null}
+                {actionResult ? (
+                  <div
+                    className="rounded border px-2 py-2 text-[11px] leading-relaxed"
+                    style={{
+                      borderColor: "var(--panel-border)",
+                      color: "var(--foreground)",
+                      background:
+                        "color-mix(in oklab, var(--panel-bg) 88%, black)",
+                    }}
+                  >
+                    <div className="mb-1 text-[11px] uppercase tracking-[0.12em]">
+                      控制响应
+                    </div>
+                    <pre className="whitespace-pre-wrap break-words">
+                      {safeJson(actionResult)}
+                    </pre>
+                  </div>
+                ) : null}
+                {isLiveTrader ? (
+                  <div
+                    className="text-[11px]"
+                    style={{ color: "var(--muted-text)" }}
+                  >
+                    实盘控制默认受后端 gate 限制，按钮会得到安全拒绝。
+                  </div>
+                ) : null}
+              </div>
+
+              <div
                 className="rounded border px-2 py-2"
                 style={{
                   borderColor: "var(--panel-border)",
@@ -291,6 +603,227 @@ export default function TradersPanel() {
           )}
         </div>
       </div>
+
+      <Modal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title={selectedTrader ? `订单预览 • ${selectedTrader.name || selectedTrader.id}` : "订单预览"}
+      >
+        <div className="space-y-4">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="space-y-1">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                标的
+              </div>
+              <input
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.symbol}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, symbol: e.target.value }))
+                }
+                placeholder="BTCUSDT"
+              />
+            </label>
+            <label className="space-y-1">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                决策 ID
+              </div>
+              <input
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.decisionId}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, decisionId: e.target.value }))
+                }
+                placeholder="decision-123"
+              />
+            </label>
+            <label className="space-y-1">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                方向
+              </div>
+              <select
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.side}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, side: e.target.value }))
+                }
+              >
+                <option value="buy">买入</option>
+                <option value="sell">卖出</option>
+                <option value="long">做多</option>
+                <option value="short">做空</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                类型
+              </div>
+              <select
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.type}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, type: e.target.value }))
+                }
+              >
+                <option value="market">市价</option>
+                <option value="limit">限价</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                数量
+              </div>
+              <input
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.quantity}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, quantity: e.target.value }))
+                }
+                placeholder="1"
+              />
+            </label>
+            <label className="space-y-1">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                限价
+              </div>
+              <input
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.limitPrice}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, limitPrice: e.target.value }))
+                }
+                placeholder="可选"
+              />
+            </label>
+            <label className="space-y-1 sm:col-span-2">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                关联 ID
+              </div>
+              <input
+                className="w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.correlationId}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, correlationId: e.target.value }))
+                }
+                placeholder="可选"
+              />
+            </label>
+            <label className="space-y-1 sm:col-span-2">
+              <div className="text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--muted-text)" }}>
+                风险上下文 JSON
+              </div>
+              <textarea
+                className="min-h-20 w-full rounded border px-2 py-1 text-xs"
+                style={{
+                  background: "var(--panel-bg)",
+                  borderColor: "var(--panel-border)",
+                  color: "var(--foreground)",
+                }}
+                value={previewForm.riskContext}
+                onChange={(e) =>
+                  setPreviewForm((v) => ({ ...v, riskContext: e.target.value }))
+                }
+                placeholder='{"source":"web-console"}'
+              />
+            </label>
+          </div>
+
+          {previewError ? (
+            <div
+              className="rounded border px-2 py-2 text-xs"
+              style={{
+                borderColor: "color-mix(in oklab, red 30%, transparent)",
+                background: "color-mix(in oklab, red 10%, transparent)",
+                color: "red",
+              }}
+            >
+              {previewError}
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded border px-3 py-1 text-xs chip-btn"
+              style={{
+                borderColor: "var(--panel-border)",
+                color: "var(--foreground)",
+              }}
+              onClick={() => void submitPreview()}
+              disabled={previewBusy}
+            >
+              {previewBusy ? "生成中..." : "生成预览"}
+            </button>
+            <button
+              type="button"
+              className="rounded border px-3 py-1 text-xs chip-btn"
+              style={{
+                borderColor: "var(--panel-border)",
+                color: "var(--muted-text)",
+              }}
+              onClick={() => setPreviewOpen(false)}
+            >
+              关闭
+            </button>
+          </div>
+
+          {previewResult ? (
+            <div
+              className="rounded border px-3 py-2 text-[11px] leading-relaxed"
+              style={{
+                borderColor: "var(--panel-border)",
+                background:
+                  "color-mix(in oklab, var(--panel-bg) 88%, black)",
+              }}
+            >
+              <div
+                className="mb-1 uppercase tracking-[0.12em]"
+                style={{ color: "var(--muted-text)" }}
+              >
+                预览结果
+              </div>
+              <pre className="whitespace-pre-wrap break-words">
+                {safeJson(previewResult)}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   );
 
@@ -300,6 +833,34 @@ export default function TradersPanel() {
     else params.delete(key);
     router.replace(`${pathname}?${params.toString()}`);
   }
+}
+
+function ControlButton({
+  label,
+  busy,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  busy?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="rounded border px-3 py-1 text-xs chip-btn"
+      style={{
+        borderColor: "var(--panel-border)",
+        color: disabled ? "var(--muted-text)" : "var(--foreground)",
+      }}
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+    >
+      {busy ? `${label}...` : label}
+    </button>
+  );
 }
 
 function TraderItem({
@@ -499,4 +1060,14 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "请求失败，请稍后重试。";
 }

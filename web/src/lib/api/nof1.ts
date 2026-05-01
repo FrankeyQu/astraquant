@@ -31,6 +31,13 @@ export const endpoints = {
     local(`/traders/${encodeURIComponent(traderId)}`),
   traderStatus: (traderId: string) =>
     local(`/traders/${encodeURIComponent(traderId)}/status`),
+  traderControl: (traderId: string, action: string) =>
+    local(`/traders/${encodeURIComponent(traderId)}/${encodeURIComponent(action)}`),
+  decisionAction: (decisionId: string, action: string) =>
+    local(`/decisions/${encodeURIComponent(decisionId)}/${encodeURIComponent(action)}`),
+  orderPreview: () => local("/orders/preview"),
+  orderAction: (orderId: string, action: string) =>
+    local(`/orders/${encodeURIComponent(orderId)}/${encodeURIComponent(action)}`),
   orders: (params: { status?: string; limit?: number; offset?: number } = {}) => {
     const query = new URLSearchParams();
     if (params.status && params.status !== "ALL") {
