@@ -475,13 +475,17 @@ type TraderControlRequest struct {
 }
 
 type TraderControlResponse struct {
-	Accepted      bool   `json:"accepted"`
-	Status        string `json:"status"`
-	TraderId      string `json:"trader_id"`
-	Action        string `json:"action"`
-	CorrelationId string `json:"correlation_id,omitempty"`
-	Message       string `json:"message,omitempty"`
-	ServerTimeMs  int64  `json:"server_time_ms"`
+	Accepted         bool   `json:"accepted"`
+	Status           string `json:"status"`
+	TraderId         string `json:"trader_id"`
+	Action           string `json:"action"`
+	CorrelationId    string `json:"correlation_id,omitempty"`
+	ControlState     string `json:"control_state,omitempty"`
+	ExecutionMode    string `json:"execution_mode,omitempty"`
+	Queued           bool   `json:"queued"`
+	ControlPlaneOnly bool   `json:"control_plane_only"`
+	Message          string `json:"message,omitempty"`
+	ServerTimeMs     int64  `json:"server_time_ms"`
 }
 
 type DecisionActionRequest struct {
@@ -498,6 +502,7 @@ type DecisionActionResponse struct {
 	DecisionId    string `json:"decision_id"`
 	Action        string `json:"action"`
 	CorrelationId string `json:"correlation_id,omitempty"`
+	Queued        bool   `json:"queued"`
 	Message       string `json:"message,omitempty"`
 	ServerTimeMs  int64  `json:"server_time_ms"`
 }
@@ -516,6 +521,7 @@ type OrderPreviewResponse struct {
 	PreviewId     string      `json:"preview_id,omitempty"`
 	CorrelationId string      `json:"correlation_id,omitempty"`
 	Checks        interface{} `json:"checks,omitempty"`
+	Submitted     bool        `json:"submitted"`
 	Message       string      `json:"message,omitempty"`
 	ServerTimeMs  int64       `json:"server_time_ms"`
 }
@@ -534,6 +540,7 @@ type OrderActionResponse struct {
 	OrderId       string `json:"order_id"`
 	Action        string `json:"action"`
 	CorrelationId string `json:"correlation_id,omitempty"`
+	Queued        bool   `json:"queued"`
 	Message       string `json:"message,omitempty"`
 	ServerTimeMs  int64  `json:"server_time_ms"`
 }
