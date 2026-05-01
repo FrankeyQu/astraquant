@@ -39,6 +39,7 @@ type ServiceContext struct {
 	LLMConfig              *llmpkg.Config
 	ExecutorConfig         *executorpkg.Config
 	ManagerConfig          *managerpkg.Config
+	ManagerControl         *managerpkg.ControlPlane
 	ManagerPromptRenderers map[string]*managerpkg.PromptRenderer
 	ManagerPromptDigests   map[string]string
 	SecretStore            secrets.SecretStore
@@ -199,6 +200,7 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 			digests[tr.ID] = renderer.Digest()
 		}
 		svc.ManagerConfig = managerCfg
+		svc.ManagerControl = managerpkg.NewControlPlane(managerCfg, nil)
 		svc.ManagerPromptRenderers = renderers
 		svc.ManagerPromptDigests = digests
 	}
@@ -308,6 +310,9 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 			svc.TraderRuntimeStateModel,
 			svc.TraderSymbolCooldownsModel,
 		)
+		if svc.ManagerControl != nil {
+			svc.ManagerControl.SetRuntimeRepo(svc.TraderRuntimeRepo)
+		}
 	}
 
 	return svc
