@@ -15,9 +15,11 @@ import (
 	"github.com/zeromicro/go-zero/core/stores/sqlx"
 	"github.com/zeromicro/go-zero/core/syncx"
 
+	cachettl "nof0-api/internal/cache"
 	"nof0-api/internal/config"
 	"nof0-api/internal/data"
 	"nof0-api/internal/model"
+	enginepersist "nof0-api/internal/persistence/engine"
 	"nof0-api/internal/secrets"
 	"nof0-api/pkg/confkit"
 	exchangepkg "nof0-api/pkg/exchange"
@@ -72,8 +74,11 @@ type ServiceContext struct {
 	TraderConfigHistoryModel    model.TraderConfigHistoryModel
 	TraderRuntimeStateModel     model.TraderRuntimeStateModel
 	TraderSymbolCooldownsModel  model.TraderSymbolCooldownsModel
+	AuditEventsModel            model.AuditEventsModel
 	TraderConfigRepo            repo.TraderConfigRepository
 	TraderRuntimeRepo           repo.TraderRuntimeRepository
+	AuditEventRepo              repo.AuditEventRepository
+	ManagerPersistenceService   managerpkg.PersistenceService
 }
 
 func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
@@ -297,6 +302,7 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 		svc.TraderConfigHistoryModel = model.NewTraderConfigHistoryModel(conn, cacheNodes, cacheOpts...)
 		svc.TraderRuntimeStateModel = model.NewTraderRuntimeStateModel(conn, cacheNodes, cacheOpts...)
 		svc.TraderSymbolCooldownsModel = model.NewTraderSymbolCooldownsModel(conn, cacheNodes, cacheOpts...)
+		svc.AuditEventsModel = model.NewAuditEventsModel(conn, cacheNodes, cacheOpts...)
 		if rawDB != nil {
 			svc.TraderConfigRepo = repo.NewTraderConfigRepository(
 				svc.TraderConfigModel,
@@ -308,6 +314,20 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 			svc.TraderRuntimeStateModel,
 			svc.TraderSymbolCooldownsModel,
 		)
+		svc.AuditEventRepo = repo.NewAuditEventRepository(svc.AuditEventsModel)
+		svc.ManagerPersistenceService = enginepersist.NewService(enginepersist.Config{
+			SQLConn:                   svc.DBConn,
+			PositionsModel:            svc.PositionsModel,
+			TradesModel:               svc.TradesModel,
+			SnapshotsModel:            svc.AccountEquitySnapshotsModel,
+			DecisionModel:             svc.DecisionCyclesModel,
+			AuditModel:                svc.AuditEventsModel,
+			Cache:                     svc.Cache,
+			Redis:                     svc.Redis,
+			TTL:                       cachettl.NewTTLSet(c.TTL),
+			ConversationsModel:        svc.ConversationsModel,
+			ConversationMessagesModel: svc.ConversationMessagesModel,
+		})
 	}
 
 	return svc

@@ -53,9 +53,21 @@ type AuditEventRecord struct {
 	CreatedAt       time.Time
 }
 
+// AuditEventListFilter is the stable query contract for control-plane audit reads.
+type AuditEventListFilter struct {
+	TraderID      string
+	Type          AuditEventType
+	CorrelationID string
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+	Limit         int
+	Offset        int
+}
+
 // AuditEventRepository persists and queries immutable audit events.
 type AuditEventRepository interface {
 	Record(ctx context.Context, event AuditEventRecord) (int64, error)
+	List(ctx context.Context, filter AuditEventListFilter) ([]AuditEventRecord, error)
 	ListByTrader(ctx context.Context, traderID string, limit int) ([]AuditEventRecord, error)
 }
 
@@ -86,10 +98,25 @@ func (r *auditEventRepo) Record(ctx context.Context, event AuditEventRecord) (in
 }
 
 func (r *auditEventRepo) ListByTrader(ctx context.Context, traderID string, limit int) ([]AuditEventRecord, error) {
-	if r == nil || r.model == nil || strings.TrimSpace(traderID) == "" {
+	if strings.TrimSpace(traderID) == "" {
 		return nil, nil
 	}
-	rows, err := r.model.ListByTrader(ctx, traderID, limit)
+	return r.List(ctx, AuditEventListFilter{TraderID: traderID, Limit: limit})
+}
+
+func (r *auditEventRepo) List(ctx context.Context, filter AuditEventListFilter) ([]AuditEventRecord, error) {
+	if r == nil || r.model == nil {
+		return nil, nil
+	}
+	rows, err := r.model.List(ctx, model.AuditEventsFilter{
+		TraderID:      filter.TraderID,
+		EventType:     string(filter.Type),
+		CorrelationID: filter.CorrelationID,
+		CreatedAfter:  filter.CreatedAfter,
+		CreatedBefore: filter.CreatedBefore,
+		Limit:         filter.Limit,
+		Offset:        filter.Offset,
+	})
 	if err != nil {
 		return nil, err
 	}

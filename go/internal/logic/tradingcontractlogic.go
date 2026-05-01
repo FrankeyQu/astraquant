@@ -5,7 +5,6 @@ package logic
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
 	managerpkg "nof0-api/pkg/manager"
+	"nof0-api/pkg/repo"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -112,36 +112,31 @@ func (l *AuditEventsLogic) AuditEvents(req *types.AuditEventsRequest) (*types.Au
 		req = &types.AuditEventsRequest{}
 	}
 	limit, offset := normalizeLimitOffset(req.Limit, req.Offset, 100)
-	if l.svcCtx.DBConn == nil {
+	if l.svcCtx == nil || l.svcCtx.AuditEventRepo == nil {
 		return &types.AuditEventsResponse{
 			Events:       []types.AuditEvent{},
-			Meta:         listMeta(limit, offset, 0, 0, "database_unavailable"),
+			Meta:         listMeta(limit, offset, 0, 0, "audit_repo_unavailable"),
 			ServerTimeMs: time.Now().UnixMilli(),
 		}, nil
 	}
 
-	where, args, err := auditEventFilters(req)
+	filter, err := auditEventFilters(req)
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`SELECT id, event_type, trader_id, cycle_id, correlation_id, symbol, action, model_id, model_name, prompt_digest, approval_token_id, reason, error_message, detail, created_at
-FROM public.audit_events
-%s
-ORDER BY created_at DESC, id DESC
-LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
-
-	var rows []auditEventRow
-	if err := l.svcCtx.DBConn.QueryRowsCtx(l.ctx, &rows, query, args...); err != nil {
+	filter.Limit = limit
+	filter.Offset = offset
+	records, err := l.svcCtx.AuditEventRepo.List(l.ctx, filter)
+	if err != nil {
 		return nil, err
 	}
-	events := make([]types.AuditEvent, 0, len(rows))
-	for i := range rows {
-		events = append(events, auditEventFromRow(rows[i]))
+	events := make([]types.AuditEvent, 0, len(records))
+	for i := range records {
+		events = append(events, auditEventFromRecord(records[i]))
 	}
 	return &types.AuditEventsResponse{
 		Events:       events,
-		Meta:         listMeta(limit, offset, len(events), offset+len(events), "audit_events"),
+		Meta:         listMeta(limit, offset, len(events), offset+len(events), "audit_event_repo"),
 		ServerTimeMs: time.Now().UnixMilli(),
 	}, nil
 }
@@ -278,24 +273,6 @@ func (l *OrderActionLogic) OrderAction(req *types.OrderActionRequest, action str
 	}, nil
 }
 
-type auditEventRow struct {
-	Id              int64          `db:"id"`
-	EventType       string         `db:"event_type"`
-	TraderId        string         `db:"trader_id"`
-	CycleId         sql.NullInt64  `db:"cycle_id"`
-	CorrelationId   sql.NullString `db:"correlation_id"`
-	Symbol          sql.NullString `db:"symbol"`
-	Action          sql.NullString `db:"action"`
-	ModelId         sql.NullString `db:"model_id"`
-	ModelName       sql.NullString `db:"model_name"`
-	PromptDigest    sql.NullString `db:"prompt_digest"`
-	ApprovalTokenId sql.NullString `db:"approval_token_id"`
-	Reason          sql.NullString `db:"reason"`
-	ErrorMessage    sql.NullString `db:"error_message"`
-	Detail          string         `db:"detail"`
-	CreatedAt       time.Time      `db:"created_at"`
-}
-
 func configuredTraders(svcCtx *svc.ServiceContext) []managerpkg.TraderConfig {
 	if svcCtx == nil || svcCtx.ManagerConfig == nil {
 		return nil
@@ -414,63 +391,55 @@ func promptDigest(svcCtx *svc.ServiceContext, traderID string) string {
 	return svcCtx.ManagerPromptDigests[traderID]
 }
 
-func auditEventFilters(req *types.AuditEventsRequest) (string, []any, error) {
-	var filters []string
-	var args []any
-	add := func(clause string, value any) {
-		args = append(args, value)
-		filters = append(filters, fmt.Sprintf(clause, len(args)))
-	}
+func auditEventFilters(req *types.AuditEventsRequest) (repo.AuditEventListFilter, error) {
+	var filter repo.AuditEventListFilter
 	if v := strings.TrimSpace(req.TraderId); v != "" {
-		add("trader_id = $%d", v)
+		filter.TraderID = v
 	}
 	if v := strings.TrimSpace(req.Type); v != "" {
-		add("event_type = $%d", v)
+		filter.Type = repo.AuditEventType(v)
 	}
 	if v := strings.TrimSpace(req.CorrelationId); v != "" {
-		add("correlation_id = $%d", v)
+		filter.CorrelationID = v
 	}
 	if v := strings.TrimSpace(req.CreatedAfterRfc3339); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return "", nil, fmt.Errorf("created_after_rfc3339 must be RFC3339: %w", err)
+			return filter, fmt.Errorf("created_after_rfc3339 must be RFC3339: %w", err)
 		}
-		add("created_at >= $%d", t)
+		filter.CreatedAfter = &t
 	}
 	if v := strings.TrimSpace(req.CreatedBeforeRfc3339); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return "", nil, fmt.Errorf("created_before_rfc3339 must be RFC3339: %w", err)
+			return filter, fmt.Errorf("created_before_rfc3339 must be RFC3339: %w", err)
 		}
-		add("created_at <= $%d", t)
+		filter.CreatedBefore = &t
 	}
-	if len(filters) == 0 {
-		return "", args, nil
-	}
-	return "WHERE " + strings.Join(filters, " AND "), args, nil
+	return filter, nil
 }
 
-func auditEventFromRow(row auditEventRow) types.AuditEvent {
+func auditEventFromRecord(row repo.AuditEventRecord) types.AuditEvent {
 	var detail any
-	if strings.TrimSpace(row.Detail) != "" {
-		if err := json.Unmarshal([]byte(row.Detail), &detail); err != nil {
+	if len(row.Detail) > 0 {
+		if err := json.Unmarshal(row.Detail, &detail); err != nil {
 			detail = row.Detail
 		}
 	}
 	event := types.AuditEvent{
-		Id:              row.Id,
-		Type:            row.EventType,
-		TraderId:        row.TraderId,
-		CycleId:         row.CycleId.Int64,
-		CorrelationId:   row.CorrelationId.String,
-		Symbol:          row.Symbol.String,
-		Action:          row.Action.String,
-		ModelId:         row.ModelId.String,
-		ModelName:       row.ModelName.String,
-		PromptDigest:    row.PromptDigest.String,
-		ApprovalTokenId: row.ApprovalTokenId.String,
-		Reason:          row.Reason.String,
-		Error:           row.ErrorMessage.String,
+		Id:              row.ID,
+		Type:            string(row.Type),
+		TraderId:        row.TraderID,
+		CycleId:         row.CycleID,
+		CorrelationId:   row.CorrelationID,
+		Symbol:          row.Symbol,
+		Action:          row.Action,
+		ModelId:         row.ModelID,
+		ModelName:       row.ModelName,
+		PromptDigest:    row.PromptDigest,
+		ApprovalTokenId: row.ApprovalTokenID,
+		Reason:          row.Reason,
+		Error:           row.Error,
 		Detail:          detail,
 		CreatedAt:       formatRFC3339(row.CreatedAt),
 	}

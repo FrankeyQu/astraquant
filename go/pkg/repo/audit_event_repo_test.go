@@ -91,10 +91,39 @@ func TestAuditEventRepositoryListByTrader(t *testing.T) {
 	require.Equal(t, createdAt, events[0].CreatedAt)
 }
 
+func TestAuditEventRepositoryListAppliesFilterContract(t *testing.T) {
+	after := time.Date(2026, 5, 1, 1, 0, 0, 0, time.UTC)
+	before := after.Add(time.Hour)
+	fake := &fakeAuditEventsModel{}
+	repository := NewAuditEventRepository(fake)
+
+	_, err := repository.List(context.Background(), AuditEventListFilter{
+		TraderID:      "trader-a",
+		Type:          AuditEventOrderFailed,
+		CorrelationID: "corr-1",
+		CreatedAfter:  &after,
+		CreatedBefore: &before,
+		Limit:         25,
+		Offset:        50,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, model.AuditEventsFilter{
+		TraderID:      "trader-a",
+		EventType:     string(AuditEventOrderFailed),
+		CorrelationID: "corr-1",
+		CreatedAfter:  &after,
+		CreatedBefore: &before,
+		Limit:         25,
+		Offset:        50,
+	}, fake.listFilter)
+}
+
 type fakeAuditEventsModel struct {
-	inserted *model.AuditEvents
-	listRows []*model.AuditEvents
-	err      error
+	inserted   *model.AuditEvents
+	listFilter model.AuditEventsFilter
+	listRows   []*model.AuditEvents
+	err        error
 }
 
 func (m *fakeAuditEventsModel) Insert(ctx context.Context, data *model.AuditEvents) (int64, error) {
@@ -109,8 +138,13 @@ func (m *fakeAuditEventsModel) Insert(ctx context.Context, data *model.AuditEven
 }
 
 func (m *fakeAuditEventsModel) ListByTrader(ctx context.Context, traderID string, limit int) ([]*model.AuditEvents, error) {
+	return m.List(ctx, model.AuditEventsFilter{TraderID: traderID, Limit: limit})
+}
+
+func (m *fakeAuditEventsModel) List(ctx context.Context, filter model.AuditEventsFilter) ([]*model.AuditEvents, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
+	m.listFilter = filter
 	return m.listRows, nil
 }
