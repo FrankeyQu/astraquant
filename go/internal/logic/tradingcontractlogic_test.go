@@ -11,6 +11,7 @@ import (
 	"nof0-api/internal/controlqueue"
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
+	executorpkg "nof0-api/pkg/executor"
 	managerpkg "nof0-api/pkg/manager"
 	"nof0-api/pkg/repo"
 )
@@ -259,6 +260,7 @@ func TestDecisionActionApproveQueuesCommandAndWritesAudit(t *testing.T) {
 		TraderId:       "paper",
 		RequestedBy:    "operator",
 		Reason:         "manual approval",
+		Decision:       testDecisionApprovalPayload(t),
 		IdempotencyKey: "idem-1",
 		CorrelationId:  "corr-approval",
 	}, "approve")
@@ -289,6 +291,23 @@ func TestDecisionActionApproveQueuesCommandAndWritesAudit(t *testing.T) {
 	require.Equal(t, "decision-1", detail["decision_id"])
 	require.Equal(t, false, detail["submitted"])
 	require.Equal(t, true, detail["queued"])
+}
+
+func TestDecisionActionApproveRequiresDecisionPayload(t *testing.T) {
+	svcCtx := &svc.ServiceContext{
+		CommandQueue: controlqueue.NewQueue(),
+	}
+
+	resp, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(&types.DecisionActionRequest{
+		DecisionId:  "decision-missing",
+		TraderId:    "paper",
+		RequestedBy: "operator",
+		Reason:      "manual approval",
+	}, "approve")
+
+	require.Error(t, err)
+	require.Nil(t, resp)
+	require.Contains(t, err.Error(), "decision payload is required")
 }
 
 func TestDecisionActionRejectQueuesPolicyAuditWithFallbackTrader(t *testing.T) {
@@ -326,6 +345,7 @@ func TestDecisionActionIdempotencyReusesQueuedCommand(t *testing.T) {
 		TraderId:       "paper",
 		RequestedBy:    "operator",
 		Reason:         "same approval",
+		Decision:       testDecisionApprovalPayload(t),
 		IdempotencyKey: "same-key",
 	}
 
@@ -373,6 +393,7 @@ func TestDecisionActionUsesPersistentCommandRepository(t *testing.T) {
 		TraderId:       "paper",
 		RequestedBy:    "operator",
 		Reason:         "persist command",
+		Decision:       testDecisionApprovalPayload(t),
 		IdempotencyKey: "persist-key",
 	}, "approve")
 
@@ -384,6 +405,14 @@ func TestDecisionActionUsesPersistentCommandRepository(t *testing.T) {
 	require.Nil(t, svcCtx.CommandQueue)
 	require.Len(t, commandRepo.enqueued, 1)
 	require.Equal(t, "decision-persisted", commandRepo.enqueued[0].DecisionID)
+	var payload struct {
+		DecisionID string               `json:"decision_id"`
+		Decision   executorpkg.Decision `json:"decision"`
+	}
+	require.NoError(t, json.Unmarshal(commandRepo.enqueued[0].Detail, &payload))
+	require.Equal(t, "decision-persisted", payload.DecisionID)
+	require.Equal(t, "open_long", payload.Decision.Action)
+	require.Equal(t, "BTC", payload.Decision.Symbol)
 	require.Len(t, auditRepo.recorded, 1)
 	require.Equal(t, "cmd-persisted", auditRepo.recorded[0].ApprovalTokenID)
 }
@@ -401,6 +430,7 @@ func TestDecisionActionSkipsAuditForReusedPersistentCommand(t *testing.T) {
 		TraderId:       "paper",
 		RequestedBy:    "operator",
 		Reason:         "same command",
+		Decision:       testDecisionApprovalPayload(t),
 		IdempotencyKey: "same-key",
 	}, "approve")
 
@@ -543,4 +573,21 @@ func (r *fakeControlCommandRepo) Fail(context.Context, string, string, json.RawM
 
 func (r *fakeControlCommandRepo) Cancel(context.Context, string, string, json.RawMessage) error {
 	return r.err
+}
+
+func testDecisionApprovalPayload(t *testing.T) map[string]interface{} {
+	t.Helper()
+	return map[string]interface{}{
+		"symbol":                 "BTC",
+		"action":                 "open_long",
+		"leverage":               3,
+		"position_size_usd":      500,
+		"entry_price":            50000,
+		"stop_loss":              49000,
+		"take_profit":            53000,
+		"confidence":             88,
+		"risk_usd":               100,
+		"reasoning":              "unit test decision payload",
+		"invalidation_condition": "btc loses support",
+	}
 }

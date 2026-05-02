@@ -4,6 +4,7 @@
 package logic
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"nof0-api/internal/controlqueue"
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
+	executorpkg "nof0-api/pkg/executor"
 	managerpkg "nof0-api/pkg/manager"
 	"nof0-api/pkg/repo"
 
@@ -298,6 +300,11 @@ func enqueueDecisionCommand(ctx context.Context, svcCtx *svc.ServiceContext, req
 		input.TraderID = req.TraderId
 		input.RequestedBy = req.RequestedBy
 		input.Reason = req.Reason
+		decision, err := normalizeDecisionMap(req.Decision)
+		if err != nil {
+			return controlqueue.EnqueueResult{}, err
+		}
+		input.Decision = decision
 		input.IdempotencyKey = req.IdempotencyKey
 		input.CorrelationID = req.CorrelationId
 	}
@@ -449,7 +456,104 @@ func validateControlCommandInput(req controlqueue.EnqueueRequest) error {
 	if strings.TrimSpace(req.Reason) == "" {
 		return fmt.Errorf("reason is required")
 	}
+	if strings.ToLower(strings.TrimSpace(req.Target)) == controlqueue.TargetDecision && strings.ToLower(strings.TrimSpace(req.Action)) == "approve" {
+		if err := validateDecisionPayload(req.Decision); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateDecisionPayload(raw json.RawMessage) error {
+	_, err := normalizeDecisionPayload(raw)
+	return err
+}
+
+func normalizeDecisionMap(decision map[string]interface{}) (json.RawMessage, error) {
+	if decision == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(decision)
+	if err != nil {
+		return nil, fmt.Errorf("invalid decision payload: %w", err)
+	}
+	return normalizeDecisionPayload(raw)
+}
+
+type snakeDecisionPayload struct {
+	Symbol                *string  `json:"symbol"`
+	Action                *string  `json:"action"`
+	Leverage              *int     `json:"leverage"`
+	PositionSizeUSD       *float64 `json:"position_size_usd"`
+	EntryPrice            *float64 `json:"entry_price"`
+	StopLoss              *float64 `json:"stop_loss"`
+	TakeProfit            *float64 `json:"take_profit"`
+	Confidence            *int     `json:"confidence"`
+	RiskUSD               *float64 `json:"risk_usd"`
+	Reasoning             *string  `json:"reasoning"`
+	InvalidationCondition *string  `json:"invalidation_condition"`
+}
+
+func normalizeDecisionPayload(raw json.RawMessage) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("decision payload is required for decision approval")
+	}
+	var decision executorpkg.Decision
+	if err := json.Unmarshal(raw, &decision); err != nil {
+		return nil, fmt.Errorf("invalid decision payload: %w", err)
+	}
+	var snake snakeDecisionPayload
+	if err := json.Unmarshal(raw, &snake); err != nil {
+		return nil, fmt.Errorf("invalid decision payload: %w", err)
+	}
+	applySnakeDecisionPayload(&decision, snake)
+	if strings.TrimSpace(decision.Action) == "" {
+		return nil, fmt.Errorf("decision payload action is required")
+	}
+	canonical, err := json.Marshal(decision)
+	if err != nil {
+		return nil, fmt.Errorf("invalid decision payload: %w", err)
+	}
+	return canonical, nil
+}
+
+func applySnakeDecisionPayload(decision *executorpkg.Decision, payload snakeDecisionPayload) {
+	if decision == nil {
+		return
+	}
+	if payload.Symbol != nil {
+		decision.Symbol = *payload.Symbol
+	}
+	if payload.Action != nil {
+		decision.Action = *payload.Action
+	}
+	if payload.Leverage != nil {
+		decision.Leverage = *payload.Leverage
+	}
+	if payload.PositionSizeUSD != nil {
+		decision.PositionSizeUSD = *payload.PositionSizeUSD
+	}
+	if payload.EntryPrice != nil {
+		decision.EntryPrice = *payload.EntryPrice
+	}
+	if payload.StopLoss != nil {
+		decision.StopLoss = *payload.StopLoss
+	}
+	if payload.TakeProfit != nil {
+		decision.TakeProfit = *payload.TakeProfit
+	}
+	if payload.Confidence != nil {
+		decision.Confidence = *payload.Confidence
+	}
+	if payload.RiskUSD != nil {
+		decision.RiskUSD = *payload.RiskUSD
+	}
+	if payload.Reasoning != nil {
+		decision.Reasoning = *payload.Reasoning
+	}
+	if payload.InvalidationCondition != nil {
+		decision.InvalidationCondition = *payload.InvalidationCondition
+	}
 }
 
 func recordControlCommandAudit(ctx context.Context, svcCtx *svc.ServiceContext, command controlqueue.Command) error {
@@ -518,6 +622,9 @@ func controlCommandInputDetail(input controlqueue.EnqueueRequest) json.RawMessag
 	}
 	if input.DecisionID != "" {
 		detail["decision_id"] = input.DecisionID
+	}
+	if len(bytes.TrimSpace(input.Decision)) > 0 {
+		detail["decision"] = input.Decision
 	}
 	if input.OrderID != "" {
 		detail["order_id"] = input.OrderID
