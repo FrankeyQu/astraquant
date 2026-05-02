@@ -528,3 +528,19 @@ func (r *fakeControlCommandRepo) Enqueue(_ context.Context, record repo.ControlC
 func (r *fakeControlCommandRepo) List(context.Context, repo.ControlCommandListFilter) ([]repo.ControlCommandRecord, error) {
 	return nil, r.err
 }
+
+func (r *fakeControlCommandRepo) ClaimQueued(context.Context, int) ([]repo.ControlCommandRecord, error) {
+	return nil, r.err
+}
+
+func (r *fakeControlCommandRepo) Complete(context.Context, string, bool, json.RawMessage) error {
+	return r.err
+}
+
+func (r *fakeControlCommandRepo) Fail(context.Context, string, string, json.RawMessage) error {
+	return r.err
+}
+
+func (r *fakeControlCommandRepo) Cancel(context.Context, string, string, json.RawMessage) error {
+	return r.err
+}

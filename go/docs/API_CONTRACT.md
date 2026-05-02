@@ -70,7 +70,7 @@ Decision and order action responses share this safe command shape:
 }
 ```
 
-`GET /api/orders` is intentionally observational. It reads immutable `order_submitted` / `order_failed` audit events to show submitted/failed order attempts. Queued control commands are a separate control-plane state and are not treated as exchange submissions. A future worker must explicitly consume `control_commands`, re-run policy checks, and call the guarded manager path before any exchange order can be submitted.
+`GET /api/orders` is intentionally observational. It reads immutable `order_submitted` / `order_failed` audit events to show submitted/failed order attempts. Queued control commands are a separate control-plane state and are not treated as exchange submissions. The guarded command worker may consume `control_commands`, but it only executes `decision approve` commands that include a complete decision payload; it re-runs manager policy checks through `Manager.ExecuteDecision` before any exchange order can be submitted. Commands missing payloads, direct order commands, and rejected commands terminate safely without submitting orders.
 
 Order preview is preview-only. It normalizes order shape, returns policy-style checks, and never submits or queues an order:
 
