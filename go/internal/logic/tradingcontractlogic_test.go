@@ -360,6 +360,55 @@ func TestOrderActionQueuesWithoutAuditRepository(t *testing.T) {
 	require.Len(t, svcCtx.CommandQueue.List(), 1)
 }
 
+func TestDecisionActionUsesPersistentCommandRepository(t *testing.T) {
+	auditRepo := &fakeAuditEventRepo{}
+	commandRepo := &fakeControlCommandRepo{}
+	svcCtx := &svc.ServiceContext{
+		ControlCommandRepo: commandRepo,
+		AuditEventRepo:     auditRepo,
+	}
+
+	resp, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(&types.DecisionActionRequest{
+		DecisionId:     "decision-persisted",
+		TraderId:       "paper",
+		RequestedBy:    "operator",
+		Reason:         "persist command",
+		IdempotencyKey: "persist-key",
+	}, "approve")
+
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+	require.Equal(t, "queued", resp.Status)
+	require.Equal(t, "cmd-persisted", resp.CommandId)
+	require.Equal(t, "cmd-persisted", resp.CorrelationId)
+	require.Nil(t, svcCtx.CommandQueue)
+	require.Len(t, commandRepo.enqueued, 1)
+	require.Equal(t, "decision-persisted", commandRepo.enqueued[0].DecisionID)
+	require.Len(t, auditRepo.recorded, 1)
+	require.Equal(t, "cmd-persisted", auditRepo.recorded[0].ApprovalTokenID)
+}
+
+func TestDecisionActionSkipsAuditForReusedPersistentCommand(t *testing.T) {
+	auditRepo := &fakeAuditEventRepo{}
+	commandRepo := &fakeControlCommandRepo{reused: true}
+	svcCtx := &svc.ServiceContext{
+		ControlCommandRepo: commandRepo,
+		AuditEventRepo:     auditRepo,
+	}
+
+	resp, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(&types.DecisionActionRequest{
+		DecisionId:     "decision-reused",
+		TraderId:       "paper",
+		RequestedBy:    "operator",
+		Reason:         "same command",
+		IdempotencyKey: "same-key",
+	}, "approve")
+
+	require.NoError(t, err)
+	require.Equal(t, "cmd-persisted", resp.CommandId)
+	require.Empty(t, auditRepo.recorded)
+}
+
 func testTradingControlServiceContext() *svc.ServiceContext {
 	cfg := &managerpkg.Config{
 		Traders: []managerpkg.TraderConfig{
@@ -452,4 +501,30 @@ func (r *fakeAuditEventRepo) List(ctx context.Context, filter repo.AuditEventLis
 
 func (r *fakeAuditEventRepo) ListByTrader(context.Context, string, int) ([]repo.AuditEventRecord, error) {
 	return r.records, nil
+}
+
+type fakeControlCommandRepo struct {
+	enqueued []repo.ControlCommandRecord
+	reused   bool
+	err      error
+}
+
+func (r *fakeControlCommandRepo) Enqueue(_ context.Context, record repo.ControlCommandRecord) (repo.ControlCommandRecord, bool, error) {
+	if r.err != nil {
+		return repo.ControlCommandRecord{}, false, r.err
+	}
+	r.enqueued = append(r.enqueued, record)
+	record.ID = "cmd-persisted"
+	record.Type = record.Target + "_" + record.Action
+	record.CorrelationID = "cmd-persisted"
+	record.Status = "queued"
+	record.Queued = true
+	record.ControlPlaneOnly = true
+	record.Submitted = false
+	record.CreatedAt = time.Date(2026, 5, 2, 1, 2, 3, 0, time.UTC)
+	return record, r.reused, nil
+}
+
+func (r *fakeControlCommandRepo) List(context.Context, repo.ControlCommandListFilter) ([]repo.ControlCommandRecord, error) {
+	return nil, r.err
 }

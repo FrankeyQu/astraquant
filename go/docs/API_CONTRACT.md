@@ -50,7 +50,7 @@ Trader lifecycle responses share the shape:
 }
 ```
 
-Decision and order approve/reject endpoints now enqueue in-memory control-plane commands and record an audit event when `AuditEventRepo` is available. They do **not** submit orders, do **not** execute persisted decisions, and do **not** bypass `manager.ApproveDecision`. `idempotency_key` reuses the same queued command for the same target/action/key combination.
+Decision and order approve/reject endpoints enqueue control-plane commands and record an audit event when `AuditEventRepo` is available. When the database is configured, commands are persisted in `control_commands`; otherwise the API falls back to the in-memory command queue. They do **not** submit orders, do **not** execute persisted decisions, and do **not** bypass `manager.ApproveDecision`. `idempotency_key` reuses the same queued command for the same target/action/key combination.
 
 Decision and order action responses share this safe command shape:
 
@@ -70,7 +70,7 @@ Decision and order action responses share this safe command shape:
 }
 ```
 
-`GET /api/orders` is intentionally observational. It reads immutable `order_submitted` / `order_failed` audit events to show submitted/failed order attempts. Queued control commands are a separate control-plane state and are not treated as exchange submissions.
+`GET /api/orders` is intentionally observational. It reads immutable `order_submitted` / `order_failed` audit events to show submitted/failed order attempts. Queued control commands are a separate control-plane state and are not treated as exchange submissions. A future worker must explicitly consume `control_commands`, re-run policy checks, and call the guarded manager path before any exchange order can be submitted.
 
 Order preview is preview-only. It normalizes order shape, returns policy-style checks, and never submits or queues an order:
 

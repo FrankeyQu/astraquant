@@ -263,7 +263,7 @@ func NewDecisionActionLogic(ctx context.Context, svcCtx *svc.ServiceContext) *De
 }
 
 func (l *DecisionActionLogic) DecisionAction(req *types.DecisionActionRequest, action string) (*types.DecisionActionResponse, error) {
-	result, err := enqueueDecisionCommand(l.svcCtx, req, action)
+	result, err := enqueueDecisionCommand(l.ctx, l.svcCtx, req, action)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +291,7 @@ func (l *DecisionActionLogic) DecisionAction(req *types.DecisionActionRequest, a
 	}, nil
 }
 
-func enqueueDecisionCommand(svcCtx *svc.ServiceContext, req *types.DecisionActionRequest, action string) (controlqueue.EnqueueResult, error) {
+func enqueueDecisionCommand(ctx context.Context, svcCtx *svc.ServiceContext, req *types.DecisionActionRequest, action string) (controlqueue.EnqueueResult, error) {
 	var input controlqueue.EnqueueRequest
 	if req != nil {
 		input.DecisionID = req.DecisionId
@@ -305,6 +305,13 @@ func enqueueDecisionCommand(svcCtx *svc.ServiceContext, req *types.DecisionActio
 	input.Action = action
 	if err := validateControlCommandInput(input); err != nil {
 		return controlqueue.EnqueueResult{}, err
+	}
+	if svcCtx != nil && svcCtx.ControlCommandRepo != nil {
+		record, reused, err := svcCtx.ControlCommandRepo.Enqueue(ctx, controlCommandRecordFromInput(input))
+		if err != nil {
+			return controlqueue.EnqueueResult{}, err
+		}
+		return controlqueue.EnqueueResult{Command: controlCommandFromRecord(record), Reused: reused}, nil
 	}
 	queue := ensureCommandQueue(svcCtx)
 	if queue == nil {
@@ -352,7 +359,7 @@ func NewOrderActionLogic(ctx context.Context, svcCtx *svc.ServiceContext) *Order
 }
 
 func (l *OrderActionLogic) OrderAction(req *types.OrderActionRequest, action string) (*types.OrderActionResponse, error) {
-	result, err := enqueueOrderCommand(l.svcCtx, req, action)
+	result, err := enqueueOrderCommand(l.ctx, l.svcCtx, req, action)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +387,7 @@ func (l *OrderActionLogic) OrderAction(req *types.OrderActionRequest, action str
 	}, nil
 }
 
-func enqueueOrderCommand(svcCtx *svc.ServiceContext, req *types.OrderActionRequest, action string) (controlqueue.EnqueueResult, error) {
+func enqueueOrderCommand(ctx context.Context, svcCtx *svc.ServiceContext, req *types.OrderActionRequest, action string) (controlqueue.EnqueueResult, error) {
 	var input controlqueue.EnqueueRequest
 	if req != nil {
 		input.OrderID = req.OrderId
@@ -394,6 +401,13 @@ func enqueueOrderCommand(svcCtx *svc.ServiceContext, req *types.OrderActionReque
 	input.Action = action
 	if err := validateControlCommandInput(input); err != nil {
 		return controlqueue.EnqueueResult{}, err
+	}
+	if svcCtx != nil && svcCtx.ControlCommandRepo != nil {
+		record, reused, err := svcCtx.ControlCommandRepo.Enqueue(ctx, controlCommandRecordFromInput(input))
+		if err != nil {
+			return controlqueue.EnqueueResult{}, err
+		}
+		return controlqueue.EnqueueResult{Command: controlCommandFromRecord(record), Reused: reused}, nil
 	}
 	queue := ensureCommandQueue(svcCtx)
 	if queue == nil {
@@ -457,6 +471,62 @@ func recordControlCommandAudit(ctx context.Context, svcCtx *svc.ServiceContext, 
 		CreatedAt:       command.CreatedAt,
 	})
 	return err
+}
+
+func controlCommandRecordFromInput(input controlqueue.EnqueueRequest) repo.ControlCommandRecord {
+	return repo.ControlCommandRecord{
+		Target:         input.Target,
+		DecisionID:     input.DecisionID,
+		OrderID:        input.OrderID,
+		TraderID:       input.TraderID,
+		Action:         input.Action,
+		RequestedBy:    input.RequestedBy,
+		Reason:         input.Reason,
+		IdempotencyKey: input.IdempotencyKey,
+		CorrelationID:  input.CorrelationID,
+		Detail:         controlCommandInputDetail(input),
+	}
+}
+
+func controlCommandFromRecord(record repo.ControlCommandRecord) controlqueue.Command {
+	return controlqueue.Command{
+		ID:               record.ID,
+		Type:             record.Type,
+		Target:           record.Target,
+		DecisionID:       record.DecisionID,
+		OrderID:          record.OrderID,
+		TraderID:         record.TraderID,
+		Action:           record.Action,
+		RequestedBy:      record.RequestedBy,
+		Reason:           record.Reason,
+		IdempotencyKey:   record.IdempotencyKey,
+		CorrelationID:    record.CorrelationID,
+		Status:           record.Status,
+		Queued:           record.Queued,
+		ControlPlaneOnly: record.ControlPlaneOnly,
+		Submitted:        record.Submitted,
+		CreatedAt:        record.CreatedAt,
+	}
+}
+
+func controlCommandInputDetail(input controlqueue.EnqueueRequest) json.RawMessage {
+	detail := map[string]interface{}{
+		"target":          input.Target,
+		"action":          input.Action,
+		"requested_by":    input.RequestedBy,
+		"idempotency_key": input.IdempotencyKey,
+	}
+	if input.DecisionID != "" {
+		detail["decision_id"] = input.DecisionID
+	}
+	if input.OrderID != "" {
+		detail["order_id"] = input.OrderID
+	}
+	data, err := json.Marshal(detail)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(data)
 }
 
 func controlCommandAuditType(action string) repo.AuditEventType {
