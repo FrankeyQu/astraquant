@@ -490,6 +490,7 @@ type TraderControlResponse struct {
 
 type DecisionActionRequest struct {
 	DecisionId     string `path:"decisionId"`
+	TraderId       string `json:"trader_id,optional"`
 	RequestedBy    string `json:"requested_by"`
 	Reason         string `json:"reason"`
 	IdempotencyKey string `json:"idempotency_key,optional"`
@@ -497,14 +498,17 @@ type DecisionActionRequest struct {
 }
 
 type DecisionActionResponse struct {
-	Accepted      bool   `json:"accepted"`
-	Status        string `json:"status"`
-	DecisionId    string `json:"decision_id"`
-	Action        string `json:"action"`
-	CorrelationId string `json:"correlation_id,omitempty"`
-	Queued        bool   `json:"queued"`
-	Message       string `json:"message,omitempty"`
-	ServerTimeMs  int64  `json:"server_time_ms"`
+	Accepted         bool   `json:"accepted"`
+	Status           string `json:"status"`
+	DecisionId       string `json:"decision_id"`
+	Action           string `json:"action"`
+	CommandId        string `json:"command_id,omitempty"`
+	CorrelationId    string `json:"correlation_id,omitempty"`
+	Queued           bool   `json:"queued"`
+	ControlPlaneOnly bool   `json:"control_plane_only"`
+	Submitted        bool   `json:"submitted"`
+	Message          string `json:"message,omitempty"`
+	ServerTimeMs     int64  `json:"server_time_ms"`
 }
 
 type OrderPreviewRequest struct {
@@ -528,6 +532,7 @@ type OrderPreviewResponse struct {
 
 type OrderActionRequest struct {
 	OrderId        string `path:"orderId"`
+	TraderId       string `json:"trader_id,optional"`
 	RequestedBy    string `json:"requested_by"`
 	Reason         string `json:"reason"`
 	IdempotencyKey string `json:"idempotency_key,optional"`
@@ -535,12 +540,15 @@ type OrderActionRequest struct {
 }
 
 type OrderActionResponse struct {
-	Accepted      bool   `json:"accepted"`
-	Status        string `json:"status"`
-	OrderId       string `json:"order_id"`
-	Action        string `json:"action"`
-	CorrelationId string `json:"correlation_id,omitempty"`
-	Queued        bool   `json:"queued"`
-	Message       string `json:"message,omitempty"`
-	ServerTimeMs  int64  `json:"server_time_ms"`
+	Accepted         bool   `json:"accepted"`
+	Status           string `json:"status"`
+	OrderId          string `json:"order_id"`
+	Action           string `json:"action"`
+	CommandId        string `json:"command_id,omitempty"`
+	CorrelationId    string `json:"correlation_id,omitempty"`
+	Queued           bool   `json:"queued"`
+	ControlPlaneOnly bool   `json:"control_plane_only"`
+	Submitted        bool   `json:"submitted"`
+	Message          string `json:"message,omitempty"`
+	ServerTimeMs     int64  `json:"server_time_ms"`
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"nof0-api/internal/controlqueue"
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
 	managerpkg "nof0-api/pkg/manager"
@@ -22,7 +23,10 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-const controlNotImplementedMessage = "control endpoint is not wired to a manager command queue; no order was queued or submitted"
+const (
+	controlCommandQueuedMessage = "control command queued; no order was submitted"
+	controlPlaneAuditTraderID   = "control-plane"
+)
 
 type TradersLogic struct {
 	logx.Logger
@@ -259,22 +263,54 @@ func NewDecisionActionLogic(ctx context.Context, svcCtx *svc.ServiceContext) *De
 }
 
 func (l *DecisionActionLogic) DecisionAction(req *types.DecisionActionRequest, action string) (*types.DecisionActionResponse, error) {
-	decisionID := ""
-	correlationID := ""
-	if req != nil {
-		decisionID = req.DecisionId
-		correlationID = req.CorrelationId
+	result, err := enqueueDecisionCommand(l.svcCtx, req, action)
+	if err != nil {
+		return nil, err
+	}
+	command := result.Command
+	if !result.Reused {
+		if err := recordControlCommandAudit(l.ctx, l.svcCtx, command); err != nil {
+			if l.svcCtx != nil && l.svcCtx.CommandQueue != nil {
+				l.svcCtx.CommandQueue.Remove(command.ID)
+			}
+			return nil, err
+		}
 	}
 	return &types.DecisionActionResponse{
-		Accepted:      false,
-		Status:        "not_implemented",
-		DecisionId:    decisionID,
-		Action:        action,
-		CorrelationId: correlationID,
-		Queued:        false,
-		Message:       controlNotImplementedMessage,
-		ServerTimeMs:  time.Now().UnixMilli(),
+		Accepted:         true,
+		Status:           command.Status,
+		DecisionId:       command.DecisionID,
+		Action:           command.Action,
+		CommandId:        command.ID,
+		CorrelationId:    command.CorrelationID,
+		Queued:           command.Queued,
+		ControlPlaneOnly: command.ControlPlaneOnly,
+		Submitted:        command.Submitted,
+		Message:          controlCommandQueuedMessage,
+		ServerTimeMs:     time.Now().UnixMilli(),
 	}, nil
+}
+
+func enqueueDecisionCommand(svcCtx *svc.ServiceContext, req *types.DecisionActionRequest, action string) (controlqueue.EnqueueResult, error) {
+	var input controlqueue.EnqueueRequest
+	if req != nil {
+		input.DecisionID = req.DecisionId
+		input.TraderID = req.TraderId
+		input.RequestedBy = req.RequestedBy
+		input.Reason = req.Reason
+		input.IdempotencyKey = req.IdempotencyKey
+		input.CorrelationID = req.CorrelationId
+	}
+	input.Target = controlqueue.TargetDecision
+	input.Action = action
+	if err := validateControlCommandInput(input); err != nil {
+		return controlqueue.EnqueueResult{}, err
+	}
+	queue := ensureCommandQueue(svcCtx)
+	if queue == nil {
+		return controlqueue.EnqueueResult{}, fmt.Errorf("control command queue is not configured")
+	}
+	return queue.Enqueue(input), nil
 }
 
 type OrderPreviewLogic struct {
@@ -316,22 +352,151 @@ func NewOrderActionLogic(ctx context.Context, svcCtx *svc.ServiceContext) *Order
 }
 
 func (l *OrderActionLogic) OrderAction(req *types.OrderActionRequest, action string) (*types.OrderActionResponse, error) {
-	orderID := ""
-	correlationID := ""
-	if req != nil {
-		orderID = req.OrderId
-		correlationID = req.CorrelationId
+	result, err := enqueueOrderCommand(l.svcCtx, req, action)
+	if err != nil {
+		return nil, err
+	}
+	command := result.Command
+	if !result.Reused {
+		if err := recordControlCommandAudit(l.ctx, l.svcCtx, command); err != nil {
+			if l.svcCtx != nil && l.svcCtx.CommandQueue != nil {
+				l.svcCtx.CommandQueue.Remove(command.ID)
+			}
+			return nil, err
+		}
 	}
 	return &types.OrderActionResponse{
-		Accepted:      false,
-		Status:        "not_implemented",
-		OrderId:       orderID,
-		Action:        action,
-		CorrelationId: correlationID,
-		Queued:        false,
-		Message:       controlNotImplementedMessage,
-		ServerTimeMs:  time.Now().UnixMilli(),
+		Accepted:         true,
+		Status:           command.Status,
+		OrderId:          command.OrderID,
+		Action:           command.Action,
+		CommandId:        command.ID,
+		CorrelationId:    command.CorrelationID,
+		Queued:           command.Queued,
+		ControlPlaneOnly: command.ControlPlaneOnly,
+		Submitted:        command.Submitted,
+		Message:          controlCommandQueuedMessage,
+		ServerTimeMs:     time.Now().UnixMilli(),
 	}, nil
+}
+
+func enqueueOrderCommand(svcCtx *svc.ServiceContext, req *types.OrderActionRequest, action string) (controlqueue.EnqueueResult, error) {
+	var input controlqueue.EnqueueRequest
+	if req != nil {
+		input.OrderID = req.OrderId
+		input.TraderID = req.TraderId
+		input.RequestedBy = req.RequestedBy
+		input.Reason = req.Reason
+		input.IdempotencyKey = req.IdempotencyKey
+		input.CorrelationID = req.CorrelationId
+	}
+	input.Target = controlqueue.TargetOrder
+	input.Action = action
+	if err := validateControlCommandInput(input); err != nil {
+		return controlqueue.EnqueueResult{}, err
+	}
+	queue := ensureCommandQueue(svcCtx)
+	if queue == nil {
+		return controlqueue.EnqueueResult{}, fmt.Errorf("control command queue is not configured")
+	}
+	return queue.Enqueue(input), nil
+}
+
+func ensureCommandQueue(svcCtx *svc.ServiceContext) *controlqueue.Queue {
+	if svcCtx == nil {
+		return nil
+	}
+	if svcCtx.CommandQueue == nil {
+		svcCtx.CommandQueue = controlqueue.NewQueue()
+	}
+	return svcCtx.CommandQueue
+}
+
+func validateControlCommandInput(req controlqueue.EnqueueRequest) error {
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action != "approve" && action != "reject" {
+		return fmt.Errorf("unsupported control action %q", req.Action)
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Target)) {
+	case controlqueue.TargetDecision:
+		if strings.TrimSpace(req.DecisionID) == "" {
+			return fmt.Errorf("decision id is required")
+		}
+	case controlqueue.TargetOrder:
+		if strings.TrimSpace(req.OrderID) == "" {
+			return fmt.Errorf("order id is required")
+		}
+	default:
+		return fmt.Errorf("unsupported control target %q", req.Target)
+	}
+	if strings.TrimSpace(req.RequestedBy) == "" {
+		return fmt.Errorf("requested_by is required")
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		return fmt.Errorf("reason is required")
+	}
+	return nil
+}
+
+func recordControlCommandAudit(ctx context.Context, svcCtx *svc.ServiceContext, command controlqueue.Command) error {
+	if svcCtx == nil || svcCtx.AuditEventRepo == nil {
+		return nil
+	}
+	detail, err := controlCommandAuditDetail(command)
+	if err != nil {
+		return err
+	}
+	_, err = svcCtx.AuditEventRepo.Record(ctx, repo.AuditEventRecord{
+		Type:            controlCommandAuditType(command.Action),
+		TraderID:        controlCommandAuditTraderID(command.TraderID),
+		CorrelationID:   command.CorrelationID,
+		Action:          command.Type,
+		ApprovalTokenID: command.ID,
+		Reason:          command.Reason,
+		Detail:          detail,
+		CreatedAt:       command.CreatedAt,
+	})
+	return err
+}
+
+func controlCommandAuditType(action string) repo.AuditEventType {
+	if strings.ToLower(strings.TrimSpace(action)) == "approve" {
+		return repo.AuditEventApproved
+	}
+	return repo.AuditEventPolicyRejected
+}
+
+func controlCommandAuditTraderID(traderID string) string {
+	if traderID = strings.TrimSpace(traderID); traderID != "" {
+		return traderID
+	}
+	return controlPlaneAuditTraderID
+}
+
+func controlCommandAuditDetail(command controlqueue.Command) (json.RawMessage, error) {
+	detail := map[string]interface{}{
+		"command_id":         command.ID,
+		"command_type":       command.Type,
+		"target":             command.Target,
+		"action":             command.Action,
+		"requested_by":       command.RequestedBy,
+		"idempotency_key":    command.IdempotencyKey,
+		"queued":             command.Queued,
+		"status":             command.Status,
+		"control_plane_only": command.ControlPlaneOnly,
+		"submitted":          command.Submitted,
+	}
+	if command.DecisionID != "" {
+		detail["decision_id"] = command.DecisionID
+	}
+	if command.OrderID != "" {
+		detail["order_id"] = command.OrderID
+	}
+	data, err := json.Marshal(detail)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(data), nil
 }
 
 type orderPreviewResult struct {

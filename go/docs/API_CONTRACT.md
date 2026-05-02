@@ -26,10 +26,10 @@ Trader lifecycle endpoints are connected to a safe control-plane state recorder.
 | `POST` | `/api/traders/:traderId/stop` | same as start |
 | `POST` | `/api/traders/:traderId/pause` | same as start plus optional `effective_until` RFC3339 |
 | `POST` | `/api/traders/:traderId/resume` | same as start |
-| `POST` | `/api/decisions/:decisionId/approve` | `requested_by`, `reason`, optional `idempotency_key`, `correlation_id` |
+| `POST` | `/api/decisions/:decisionId/approve` | optional `trader_id`, `requested_by`, `reason`, optional `idempotency_key`, `correlation_id` |
 | `POST` | `/api/decisions/:decisionId/reject` | same as approve |
 | `POST` | `/api/orders/preview` | `trader_id`, optional `decision_id`, `correlation_id`, `orders`, `risk_context` |
-| `POST` | `/api/orders/:orderId/approve` | `requested_by`, `reason`, optional `idempotency_key`, `correlation_id` |
+| `POST` | `/api/orders/:orderId/approve` | optional `trader_id`, `requested_by`, `reason`, optional `idempotency_key`, `correlation_id` |
 | `POST` | `/api/orders/:orderId/reject` | same as approve |
 
 Trader lifecycle responses share the shape:
@@ -50,9 +50,27 @@ Trader lifecycle responses share the shape:
 }
 ```
 
-Decision and order approve/reject endpoints remain intentionally safe placeholders until a real guarded queue exists. They return `accepted=false`, `status=not_implemented`, and `queued=false`.
+Decision and order approve/reject endpoints now enqueue in-memory control-plane commands and record an audit event when `AuditEventRepo` is available. They do **not** submit orders, do **not** execute persisted decisions, and do **not** bypass `manager.ApproveDecision`. `idempotency_key` reuses the same queued command for the same target/action/key combination.
 
-`GET /api/orders` is intentionally observational. It reads immutable audit events to show submitted/failed order attempts, but it does not imply an order queue exists and does not expose a submission path.
+Decision and order action responses share this safe command shape:
+
+```json
+{
+  "accepted": true,
+  "status": "queued",
+  "decision_id": "decision-123",
+  "action": "approve",
+  "command_id": "cmd-...",
+  "correlation_id": "optional-correlation-id-or-command-id",
+  "queued": true,
+  "control_plane_only": true,
+  "submitted": false,
+  "message": "control command queued; no order was submitted",
+  "server_time_ms": 1770000000000
+}
+```
+
+`GET /api/orders` is intentionally observational. It reads immutable `order_submitted` / `order_failed` audit events to show submitted/failed order attempts. Queued control commands are a separate control-plane state and are not treated as exchange submissions.
 
 Order preview is preview-only. It normalizes order shape, returns policy-style checks, and never submits or queues an order:
 

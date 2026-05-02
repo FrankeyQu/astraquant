@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"nof0-api/internal/controlqueue"
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
 	managerpkg "nof0-api/pkg/manager"
@@ -246,6 +247,119 @@ func TestTradingContractOrderPreviewRejectsUnknownTrader(t *testing.T) {
 	require.False(t, resp.Submitted)
 }
 
+func TestDecisionActionApproveQueuesCommandAndWritesAudit(t *testing.T) {
+	auditRepo := &fakeAuditEventRepo{}
+	svcCtx := &svc.ServiceContext{
+		CommandQueue:   controlqueue.NewQueue(),
+		AuditEventRepo: auditRepo,
+	}
+
+	resp, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(&types.DecisionActionRequest{
+		DecisionId:     "decision-1",
+		TraderId:       "paper",
+		RequestedBy:    "operator",
+		Reason:         "manual approval",
+		IdempotencyKey: "idem-1",
+		CorrelationId:  "corr-approval",
+	}, "approve")
+
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+	require.Equal(t, "queued", resp.Status)
+	require.Equal(t, "decision-1", resp.DecisionId)
+	require.Equal(t, "approve", resp.Action)
+	require.NotEmpty(t, resp.CommandId)
+	require.Equal(t, "corr-approval", resp.CorrelationId)
+	require.True(t, resp.Queued)
+	require.True(t, resp.ControlPlaneOnly)
+	require.False(t, resp.Submitted)
+	require.Len(t, svcCtx.CommandQueue.List(), 1)
+
+	require.Len(t, auditRepo.recorded, 1)
+	record := auditRepo.recorded[0]
+	require.Equal(t, repo.AuditEventApproved, record.Type)
+	require.Equal(t, "paper", record.TraderID)
+	require.Equal(t, "corr-approval", record.CorrelationID)
+	require.Equal(t, "decision_approve", record.Action)
+	require.Equal(t, resp.CommandId, record.ApprovalTokenID)
+	require.Equal(t, "manual approval", record.Reason)
+
+	var detail map[string]interface{}
+	require.NoError(t, json.Unmarshal(record.Detail, &detail))
+	require.Equal(t, "decision-1", detail["decision_id"])
+	require.Equal(t, false, detail["submitted"])
+	require.Equal(t, true, detail["queued"])
+}
+
+func TestDecisionActionRejectQueuesPolicyAuditWithFallbackTrader(t *testing.T) {
+	auditRepo := &fakeAuditEventRepo{}
+	svcCtx := &svc.ServiceContext{
+		CommandQueue:   controlqueue.NewQueue(),
+		AuditEventRepo: auditRepo,
+	}
+
+	resp, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(&types.DecisionActionRequest{
+		DecisionId:  "decision-2",
+		RequestedBy: "operator",
+		Reason:      "risk reject",
+	}, "reject")
+
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+	require.Equal(t, "queued", resp.Status)
+	require.NotEmpty(t, resp.CommandId)
+	require.Equal(t, resp.CommandId, resp.CorrelationId)
+	require.Len(t, auditRepo.recorded, 1)
+	require.Equal(t, repo.AuditEventPolicyRejected, auditRepo.recorded[0].Type)
+	require.Equal(t, "control-plane", auditRepo.recorded[0].TraderID)
+	require.Equal(t, "decision_reject", auditRepo.recorded[0].Action)
+}
+
+func TestDecisionActionIdempotencyReusesQueuedCommand(t *testing.T) {
+	auditRepo := &fakeAuditEventRepo{}
+	svcCtx := &svc.ServiceContext{
+		CommandQueue:   controlqueue.NewQueue(),
+		AuditEventRepo: auditRepo,
+	}
+	req := &types.DecisionActionRequest{
+		DecisionId:     "decision-idem",
+		TraderId:       "paper",
+		RequestedBy:    "operator",
+		Reason:         "same approval",
+		IdempotencyKey: "same-key",
+	}
+
+	first, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(req, "approve")
+	require.NoError(t, err)
+	second, err := NewDecisionActionLogic(context.Background(), svcCtx).DecisionAction(req, "approve")
+	require.NoError(t, err)
+
+	require.Equal(t, first.CommandId, second.CommandId)
+	require.Len(t, svcCtx.CommandQueue.List(), 1)
+	require.Len(t, auditRepo.recorded, 1)
+}
+
+func TestOrderActionQueuesWithoutAuditRepository(t *testing.T) {
+	svcCtx := &svc.ServiceContext{CommandQueue: controlqueue.NewQueue()}
+
+	resp, err := NewOrderActionLogic(context.Background(), svcCtx).OrderAction(&types.OrderActionRequest{
+		OrderId:     "order-1",
+		TraderId:    "paper",
+		RequestedBy: "operator",
+		Reason:      "queue only",
+	}, "approve")
+
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+	require.Equal(t, "queued", resp.Status)
+	require.Equal(t, "order-1", resp.OrderId)
+	require.NotEmpty(t, resp.CommandId)
+	require.True(t, resp.Queued)
+	require.True(t, resp.ControlPlaneOnly)
+	require.False(t, resp.Submitted)
+	require.Len(t, svcCtx.CommandQueue.List(), 1)
+}
+
 func testTradingControlServiceContext() *svc.ServiceContext {
 	cfg := &managerpkg.Config{
 		Traders: []managerpkg.TraderConfig{
@@ -306,13 +420,15 @@ func TestAuditEventsNoRepositoryDegradesSafely(t *testing.T) {
 }
 
 type fakeAuditEventRepo struct {
-	filter  repo.AuditEventListFilter
-	filters []repo.AuditEventListFilter
-	records []repo.AuditEventRecord
+	filter   repo.AuditEventListFilter
+	filters  []repo.AuditEventListFilter
+	records  []repo.AuditEventRecord
+	recorded []repo.AuditEventRecord
 }
 
-func (r *fakeAuditEventRepo) Record(context.Context, repo.AuditEventRecord) (int64, error) {
-	return 0, nil
+func (r *fakeAuditEventRepo) Record(_ context.Context, record repo.AuditEventRecord) (int64, error) {
+	r.recorded = append(r.recorded, record)
+	return int64(len(r.recorded)), nil
 }
 
 func (r *fakeAuditEventRepo) List(ctx context.Context, filter repo.AuditEventListFilter) ([]repo.AuditEventRecord, error) {
