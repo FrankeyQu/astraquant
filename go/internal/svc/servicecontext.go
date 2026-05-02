@@ -17,6 +17,7 @@ import (
 
 	cachettl "nof0-api/internal/cache"
 	"nof0-api/internal/config"
+	"nof0-api/internal/controlqueue"
 	"nof0-api/internal/data"
 	"nof0-api/internal/model"
 	enginepersist "nof0-api/internal/persistence/engine"
@@ -53,6 +54,7 @@ type ServiceContext struct {
 	DefaultMarket          marketpkg.Provider
 	ManagerTraderExchange  map[string]exchangepkg.Provider
 	ManagerTraderMarket    map[string]marketpkg.Provider
+	CommandQueue           *controlqueue.Queue
 
 	// Optional DB models (injected but unused by handlers/logic for now)
 	DBConn                      sqlx.SqlConn
@@ -87,9 +89,10 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 	secretStore := secrets.NewEnvStore()
 
 	svc := &ServiceContext{
-		Config:      c,
-		DataLoader:  data.NewDataLoader(c.DataPath),
-		SecretStore: secretStore,
+		Config:       c,
+		DataLoader:   data.NewDataLoader(c.DataPath),
+		SecretStore:  secretStore,
+		CommandQueue: controlqueue.NewQueue(),
 	}
 
 	cacheNodes := filterCacheNodes(c.Cache)
