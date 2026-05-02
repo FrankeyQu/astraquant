@@ -24,9 +24,10 @@
 
 ## P2 – market data + consistency (Week 2–3)
 
-7. **Design market-data ingestion path.**
-   - Decide whether persistence happens inside `pkg/market` providers or via a separate ingestion worker.
-   - Implement writes for `market_assets`, `market_asset_ctx`, `price_latest`, `price_ticks`, and matching Redis keys with proper rate limiting.
+7. [x] **Design market-data ingestion path.**
+   - Persistence happens through the `market.Persistence` hook injected into `pkg/market` providers, with `internal/ingest.MarketIngestor` driving periodic refreshes.
+   - Market writes now cover `market_assets`, `market_asset_ctx`, `price_latest`, `price_ticks`, plus existing write-through market cache keys.
+   - Schema compatibility is tracked by `migrations/004_market_data_storage.*.sql`.
 8. **Bootstrap cache warm-up + consistency jobs.**
    - On startup, hydrate Redis positions/trades/analytics from Postgres.
    - Add periodic consistency checks (compare DB vs cache vs exchange) and document remediation steps.
