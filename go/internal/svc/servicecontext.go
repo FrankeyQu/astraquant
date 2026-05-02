@@ -78,9 +78,11 @@ type ServiceContext struct {
 	TraderRuntimeStateModel     model.TraderRuntimeStateModel
 	TraderSymbolCooldownsModel  model.TraderSymbolCooldownsModel
 	AuditEventsModel            model.AuditEventsModel
+	ControlCommandsModel        model.ControlCommandsModel
 	TraderConfigRepo            repo.TraderConfigRepository
 	TraderRuntimeRepo           repo.TraderRuntimeRepository
 	AuditEventRepo              repo.AuditEventRepository
+	ControlCommandRepo          repo.ControlCommandRepository
 	ManagerPersistenceService   managerpkg.PersistenceService
 }
 
@@ -308,6 +310,7 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 		svc.TraderRuntimeStateModel = model.NewTraderRuntimeStateModel(conn, cacheNodes, cacheOpts...)
 		svc.TraderSymbolCooldownsModel = model.NewTraderSymbolCooldownsModel(conn, cacheNodes, cacheOpts...)
 		svc.AuditEventsModel = model.NewAuditEventsModel(conn, cacheNodes, cacheOpts...)
+		svc.ControlCommandsModel = model.NewControlCommandsModel(conn, cacheNodes, cacheOpts...)
 		if rawDB != nil {
 			svc.TraderConfigRepo = repo.NewTraderConfigRepository(
 				svc.TraderConfigModel,
@@ -320,6 +323,7 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 			svc.TraderSymbolCooldownsModel,
 		)
 		svc.AuditEventRepo = repo.NewAuditEventRepository(svc.AuditEventsModel)
+		svc.ControlCommandRepo = repo.NewControlCommandRepository(svc.ControlCommandsModel)
 		svc.ManagerPersistenceService = enginepersist.NewService(enginepersist.Config{
 			SQLConn:                   svc.DBConn,
 			PositionsModel:            svc.PositionsModel,

@@ -21,6 +21,9 @@ func TestNewServiceContextWithoutDatabaseLeavesPersistenceUnavailable(t *testing
 	if svcCtx.AuditEventsModel != nil || svcCtx.AuditEventRepo != nil {
 		t.Fatal("expected audit persistence dependencies to stay nil without DB")
 	}
+	if svcCtx.ControlCommandsModel != nil || svcCtx.ControlCommandRepo != nil {
+		t.Fatal("expected control command persistence dependencies to stay nil without DB")
+	}
 	if svcCtx.ManagerPersistenceService != nil {
 		t.Fatal("expected manager persistence service to stay nil without DB")
 	}
