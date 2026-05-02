@@ -48,16 +48,23 @@ type SlowThresholdConf struct {
 	Redis int `json:",default=500"`  // milliseconds
 }
 
+type CommandWorkerConf struct {
+	Enabled   bool          `json:",default=false"`
+	Interval  time.Duration `json:",default=5s"`
+	BatchSize int           `json:",default=10"`
+}
+
 type Config struct {
 	rest.RestConf
 	// Env indicates the running environment: test | dev | prod
 	// Defaults to test. In test mode we prefer low-cost LLM routing.
-	Env      string          `json:",default=test"`
-	DataPath string          `json:",default=../../mcp/data"`
-	Postgres PostgresConf    `json:",optional"`
-	Cache    cache.CacheConf `json:",optional"`
-	TTL      CacheTTL        `json:",optional"`
-	Logging  LoggingConf     `json:",optional"`
+	Env           string            `json:",default=test"`
+	DataPath      string            `json:",default=../../mcp/data"`
+	Postgres      PostgresConf      `json:",optional"`
+	Cache         cache.CacheConf   `json:",optional"`
+	TTL           CacheTTL          `json:",optional"`
+	Logging       LoggingConf       `json:",optional"`
+	CommandWorker CommandWorkerConf `json:",optional"`
 
 	LLM      confkit.Section[llmpkg.Config]      `json:",optional"`
 	Executor confkit.Section[executorpkg.Config] `json:",optional"`
@@ -216,7 +223,10 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.DataPath) == "" {
 		return errors.New("config: dataPath is required")
 	}
-	return c.validateTTL()
+	if err := c.validateTTL(); err != nil {
+		return err
+	}
+	return c.validateCommandWorker()
 }
 
 func (c *Config) validateTTL() error {
@@ -228,6 +238,25 @@ func (c *Config) validateTTL() error {
 	}
 	if c.TTL.Long <= 0 {
 		return errors.New("config: ttl.long must be positive")
+	}
+	return nil
+}
+
+func (c *Config) validateCommandWorker() error {
+	if !c.CommandWorker.Enabled {
+		if c.CommandWorker.Interval <= 0 {
+			c.CommandWorker.Interval = 5 * time.Second
+		}
+		if c.CommandWorker.BatchSize <= 0 {
+			c.CommandWorker.BatchSize = 10
+		}
+		return nil
+	}
+	if c.CommandWorker.Interval <= 0 {
+		return errors.New("config: commandWorker.interval must be positive")
+	}
+	if c.CommandWorker.BatchSize <= 0 {
+		return errors.New("config: commandWorker.batchSize must be positive")
 	}
 	return nil
 }
