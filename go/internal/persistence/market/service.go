@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -22,9 +23,10 @@ import (
 )
 
 const (
-	assetSQLTimeout   = 30 * time.Second
-	assetCacheTimeout = 30 * time.Second
-	cacheWorkerLimit  = 32
+	assetSQLTimeout    = 30 * time.Second
+	assetCacheTimeout  = 30 * time.Second
+	snapshotSQLTimeout = 30 * time.Second
+	cacheWorkerLimit   = 32
 )
 
 // Service implements market data persistence and caching hooks.
@@ -66,6 +68,13 @@ func NewService(cfg Config) market.Persistence {
 func (s *Service) UpsertAssets(ctx context.Context, provider string, assets []market.Asset) error {
 	if s == nil || s.sqlConn == nil || len(assets) == 0 {
 		return nil
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	start := time.Now()
@@ -166,11 +175,38 @@ func (s *Service) RecordSnapshot(ctx context.Context, provider string, snapshot 
 	if s == nil || s.sqlConn == nil || snapshot == nil || strings.TrimSpace(snapshot.Symbol) == "" {
 		return nil
 	}
-	now := time.Now().UTC()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	provider = strings.TrimSpace(provider)
+	symbol := strings.ToUpper(strings.TrimSpace(snapshot.Symbol))
+	if provider == "" || symbol == "" {
+		return nil
+	}
 	price := snapshot.Price.Last
-	s.cachePrice(ctx, provider, snapshot.Symbol, price, now)
-	s.cacheMarketCtx(ctx, provider, snapshot)
-	s.updateCryptoPrices(ctx, provider, snapshot.Symbol, price)
+	if !(price > 0) || math.IsNaN(price) || math.IsInf(price, 0) {
+		return fmt.Errorf("marketpersist: invalid snapshot price provider=%s symbol=%s price=%v", provider, symbol, price)
+	}
+	now := time.Now().UTC()
+	ctxDoc := buildMarketContextDocument(provider, symbol, snapshot, now)
+	ctxJSON, err := json.Marshal(ctxDoc)
+	if err != nil {
+		return fmt.Errorf("marketpersist: marshal market context provider=%s symbol=%s: %w", provider, symbol, err)
+	}
+	txCtx, txCancel := context.WithTimeout(ctx, snapshotSQLTimeout)
+	defer txCancel()
+	if err := s.sqlConn.TransactCtx(txCtx, func(txCtx context.Context, session sqlx.Session) error {
+		if err := upsertPriceLatest(txCtx, session, provider, symbol, price, now); err != nil {
+			return err
+		}
+		return upsertMarketAssetCtx(txCtx, session, provider, symbol, ctxJSON)
+	}); err != nil {
+		logx.WithContext(txCtx).Errorf("marketpersist: persist snapshot failed provider=%s symbol=%s err=%v", provider, symbol, err)
+		return err
+	}
+	s.cachePrice(ctx, provider, symbol, price, now)
+	s.cacheMarketCtx(ctx, provider, symbol, snapshot, now)
+	s.updateCryptoPrices(ctx, provider, symbol, price)
 	return nil
 }
 
@@ -178,6 +214,9 @@ func (s *Service) RecordSnapshot(ctx context.Context, provider string, snapshot 
 func (s *Service) RecordPriceSeries(ctx context.Context, provider string, symbol string, ticks []market.PriceTick) error {
 	if s == nil || s.priceTicksModel == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	provider = strings.TrimSpace(provider)
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
@@ -293,7 +332,7 @@ func (s *Service) cachePrice(ctx context.Context, provider, symbol string, price
 	}
 }
 
-func (s *Service) cacheMarketCtx(ctx context.Context, provider string, snapshot *market.Snapshot) {
+func (s *Service) cacheMarketCtx(ctx context.Context, provider, symbol string, snapshot *market.Snapshot, recordedAt time.Time) {
 	if s.cache == nil {
 		return
 	}
@@ -301,14 +340,14 @@ func (s *Service) cacheMarketCtx(ctx context.Context, provider string, snapshot 
 	if ttl <= 0 {
 		return
 	}
-	key := cachekeys.MarketAssetCtxKey(provider, snapshot.Symbol)
+	key := cachekeys.MarketAssetCtxKey(provider, symbol)
 	ctxPayload := map[string]any{
 		"price":        snapshot.Price.Last,
 		"change":       snapshot.Change,
 		"funding":      snapshot.Funding,
 		"oi":           snapshot.OpenInterest,
 		"indicators":   snapshot.Indicators,
-		"timestamp_ms": time.Now().UTC().UnixMilli(),
+		"timestamp_ms": recordedAt.UnixMilli(),
 	}
 	if err := s.cache.SetWithExpireCtx(ctx, key, ctxPayload, ttl); err != nil {
 		logx.WithContext(ctx).Errorf("marketpersist: cache ctx key=%s err=%v", key, err)
@@ -355,6 +394,50 @@ func buildTickRaw(tick market.PriceTick) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: string(data), Valid: true}
+}
+
+func buildMarketContextDocument(provider, symbol string, snapshot *market.Snapshot, recordedAt time.Time) map[string]any {
+	return map[string]any{
+		"provider":       provider,
+		"symbol":         symbol,
+		"price":          snapshot.Price.Last,
+		"change":         snapshot.Change,
+		"funding":        snapshot.Funding,
+		"open_interest":  snapshot.OpenInterest,
+		"indicators":     snapshot.Indicators,
+		"intraday":       snapshot.Intraday,
+		"long_term":      snapshot.LongTerm,
+		"recorded_at_ms": recordedAt.UnixMilli(),
+	}
+}
+
+func upsertPriceLatest(ctx context.Context, session sqlx.Session, provider, symbol string, price float64, recordedAt time.Time) error {
+	const query = `
+INSERT INTO public.price_latest (
+    provider, symbol, price, ts_ms, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, NOW(), NOW()
+)
+ON CONFLICT (provider, symbol) DO UPDATE SET
+    price = EXCLUDED.price,
+    ts_ms = EXCLUDED.ts_ms,
+    updated_at = NOW()`
+	_, err := session.ExecCtx(ctx, query, provider, symbol, price, recordedAt.UTC().UnixMilli())
+	return err
+}
+
+func upsertMarketAssetCtx(ctx context.Context, session sqlx.Session, provider, symbol string, ctxJSON []byte) error {
+	const query = `
+INSERT INTO public.market_asset_ctx (
+    provider, symbol, context, created_at, updated_at
+) VALUES (
+    $1, $2, $3::jsonb, NOW(), NOW()
+)
+ON CONFLICT (provider, symbol) DO UPDATE SET
+    context = EXCLUDED.context,
+    updated_at = NOW()`
+	_, err := session.ExecCtx(ctx, query, provider, symbol, string(ctxJSON))
+	return err
 }
 
 func nullFloatFromMeta(meta map[string]any, keys ...string) sql.NullFloat64 {
