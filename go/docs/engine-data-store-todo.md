@@ -28,9 +28,11 @@
    - Persistence happens through the `market.Persistence` hook injected into `pkg/market` providers, with `internal/ingest.MarketIngestor` driving periodic refreshes.
    - Market writes now cover `market_assets`, `market_asset_ctx`, `price_latest`, `price_ticks`, plus existing write-through market cache keys.
    - Schema compatibility is tracked by `migrations/004_market_data_storage.*.sql`.
-8. **Bootstrap cache warm-up + consistency jobs.**
-   - On startup, hydrate Redis positions/trades/analytics from Postgres.
-   - Add periodic consistency checks (compare DB vs cache vs exchange) and document remediation steps.
+8. [x] **Bootstrap cache warm-up + consistency jobs.**
+   - Startup now hydrates manager position/trade/decision caches from Postgres via `engine.Service.HydrateCaches`.
+   - Startup also hydrates market latest price/context/asset cache keys from `price_latest`, `market_asset_ctx`, and `market_assets`.
+   - `internal/consistency.MarketChecker` runs periodically from `cmd/llm` and reports DB vs cache vs live market provider price mismatches without touching order execution.
+   - Remediation: inspect `market consistency` warning logs, verify provider health, rerun market ingestion, then rerun cache hydration if cache keys are missing/stale.
 
 ## P3 – resilience & observability (Week 3+)
 

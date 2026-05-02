@@ -251,8 +251,7 @@ func (s *Service) RecordAnalytics(ctx context.Context, snapshot managerpkg.Analy
 	return nil
 }
 
-// HydrateCaches reloads cache state for provided trader IDs. Currently best-effort no-op
-// until dedicated cache warmup jobs are implemented.
+// HydrateCaches reloads cache state for provided trader IDs.
 func (s *Service) HydrateCaches(ctx context.Context, traderIDs []string) error {
 	if s == nil || s.cache == nil {
 		return nil
