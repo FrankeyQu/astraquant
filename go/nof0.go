@@ -4,9 +4,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 
+	"nof0-api/internal/commandworker"
 	"nof0-api/internal/config"
 	"nof0-api/internal/handler"
 	"nof0-api/internal/svc"
@@ -24,6 +26,16 @@ func main() {
 
 	ctx := svc.NewServiceContext(*cfg, cfg.MainPath())
 	handler.RegisterHandlers(server, ctx)
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workerRuntime, err := commandworker.Start(rootCtx, cfg.CommandWorker, ctx)
+	if err != nil {
+		panic(err)
+	}
+	if workerRuntime != nil {
+		defer workerRuntime.Stop()
+	}
 
 	fmt.Printf("Starting server at %s:%d...\n", cfg.Host, cfg.Port)
 	server.Start()

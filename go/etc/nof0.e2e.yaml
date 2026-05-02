@@ -26,6 +26,11 @@ Logging:
   VerboseSQL: false
   VerboseLLM: false
 
+CommandWorker:
+  Enabled: false
+  Interval: 5s
+  BatchSize: 10
+
 LLM:
   File: llm.e2e.yaml
 

@@ -36,6 +36,13 @@ Logging:
   VerboseSQL: false  # set to true for debugging, false in production
   VerboseLLM: false  # set to true to log full LLM prompts
 
+# Disabled by default. When enabled, consumes persisted control_commands and
+# executes only guarded decision approvals through Manager.ExecuteDecision.
+CommandWorker:
+  Enabled: false
+  Interval: 5s
+  BatchSize: 10
+
 LLM:
   File: llm.yaml
 

@@ -72,6 +72,8 @@ Decision and order action responses share this safe command shape:
 
 `GET /api/orders` is intentionally observational. It reads immutable `order_submitted` / `order_failed` audit events to show submitted/failed order attempts. Queued control commands are a separate control-plane state and are not treated as exchange submissions. The guarded command worker may consume `control_commands`, but it only executes `decision approve` commands that include a complete decision payload; it re-runs manager policy checks through `Manager.ExecuteDecision` before any exchange order can be submitted. Commands missing payloads, direct order commands, and rejected commands terminate safely without submitting orders.
 
+The guarded command worker is disabled by default. Enable it explicitly with `CommandWorker.Enabled=true`; it requires `Postgres`, `Cache`, `LLM`, `Manager`, `Exchange`, and `Market` wiring to be available. When disabled, approve/reject endpoints still queue commands but nothing consumes them.
+
 Order preview is preview-only. It normalizes order shape, returns policy-style checks, and never submits or queues an order:
 
 ```json
