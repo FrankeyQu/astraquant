@@ -1,0 +1,61 @@
+manager:
+  total_equity_usd: 10000
+  reserve_equity_pct: 10
+  allocation_strategy: equal_weight
+  rebalance_interval: 1h
+  state_storage_backend: file
+  state_storage_path: ../data/e2e_manager_state.json
+
+traders:
+  - id: paper_aggressive_short
+    name: E2E Paper Short
+    exchange_provider: paper_trading
+    market_provider: hyperliquid_testnet
+    execution_mode: paper
+    order_style: market_ioc
+    market_ioc_slippage_bps: 75
+    prompt_template: prompts/manager/aggressive_short.tmpl
+    executor_prompt_template: prompts/executor/default_prompt.tmpl
+    model: e2e-dummy
+    decision_interval: 3m
+    allocation_pct: 45
+    auto_start: false
+    risk_params:
+      max_positions: 3
+      max_position_size_usd: 500
+      max_margin_usage_pct: 60
+      major_coin_leverage: 5
+      altcoin_leverage: 3
+      min_risk_reward_ratio: 3.0
+      min_confidence: 75
+      stop_loss_enabled: true
+      take_profit_enabled: true
+
+  - id: paper_conservative_long
+    name: E2E Paper Long
+    exchange_provider: paper_trading
+    market_provider: hyperliquid_testnet
+    execution_mode: paper
+    order_style: market_ioc
+    market_ioc_slippage_bps: 75
+    prompt_template: prompts/manager/conservative_long.tmpl
+    executor_prompt_template: prompts/executor/default_prompt.tmpl
+    model: e2e-dummy
+    decision_interval: 5m
+    allocation_pct: 45
+    auto_start: false
+    risk_params:
+      max_positions: 2
+      max_position_size_usd: 300
+      max_margin_usage_pct: 50
+      major_coin_leverage: 5
+      altcoin_leverage: 3
+      min_risk_reward_ratio: 2.5
+      min_confidence: 80
+      stop_loss_enabled: true
+      take_profit_enabled: true
+
+monitoring:
+  update_interval: 15s
+  alert_webhook: ""
+  metrics_exporter: prometheus

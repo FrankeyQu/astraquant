@@ -417,18 +417,18 @@ type OrdersRequest {
 }
 
 type Order {
-	Id            string      `json:"id"`
-	TraderId      string      `json:"trader_id"`
+	Id            string      `json:"id,optional"`
+	TraderId      string      `json:"trader_id,optional"`
 	Symbol        string      `json:"symbol"`
 	Side          string      `json:"side"`
 	Type          string      `json:"type"`
-	Status        string      `json:"status"`
+	Status        string      `json:"status,optional"`
 	Quantity      float64     `json:"quantity"`
-	LimitPrice    float64     `json:"limit_price,omitempty"`
-	CreatedAt     string      `json:"created_at,omitempty"`
-	UpdatedAt     string      `json:"updated_at,omitempty"`
-	CorrelationId string      `json:"correlation_id,omitempty"`
-	Detail        interface{} `json:"detail,omitempty"`
+	LimitPrice    float64     `json:"limit_price,optional"`
+	CreatedAt     string      `json:"created_at,optional"`
+	UpdatedAt     string      `json:"updated_at,optional"`
+	CorrelationId string      `json:"correlation_id,optional"`
+	Detail        interface{} `json:"detail,optional"`
 }
 
 type OrdersResponse {
@@ -445,7 +445,7 @@ type TraderControlRequest {
 	Reason         string `json:"reason"`
 	IdempotencyKey string `json:"idempotency_key,optional"`
 	CorrelationId  string `json:"correlation_id,optional"`
-	EffectiveUntil string `json:"effective_until,omitempty"`
+	EffectiveUntil string `json:"effective_until,optional"`
 }
 
 type TraderControlResponse {
@@ -477,11 +477,11 @@ type DecisionActionResponse {
 }
 
 type OrderPreviewRequest {
-	TraderId      string      `json:"trader_id"`
-	DecisionId    string      `json:"decision_id,optional"`
-	CorrelationId string      `json:"correlation_id,optional"`
-	Orders        []Order     `json:"orders"`
-	RiskContext   interface{} `json:"risk_context,omitempty"`
+	TraderId      string                 `json:"trader_id"`
+	DecisionId    string                 `json:"decision_id,optional"`
+	CorrelationId string                 `json:"correlation_id,optional"`
+	Orders        []Order                `json:"orders"`
+	RiskContext   map[string]interface{} `json:"risk_context,optional"`
 }
 
 type OrderPreviewResponse {

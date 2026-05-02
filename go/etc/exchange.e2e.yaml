@@ -1,0 +1,4 @@
+default: paper_trading
+providers:
+  paper_trading:
+    type: sim
