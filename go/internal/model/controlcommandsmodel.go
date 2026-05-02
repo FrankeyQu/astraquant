@@ -49,6 +49,8 @@ type (
 		Insert(ctx context.Context, data *ControlCommands) error
 		FindByIdempotency(ctx context.Context, target, targetID, action, idempotencyKey string) (*ControlCommands, error)
 		List(ctx context.Context, filter ControlCommandsFilter) ([]*ControlCommands, error)
+		ClaimQueued(ctx context.Context, limit int) ([]*ControlCommands, error)
+		UpdateStatus(ctx context.Context, id, status string, submitted bool, detail string) error
 	}
 
 	customControlCommandsModel struct {
@@ -180,4 +182,47 @@ func (m *customControlCommandsModel) List(ctx context.Context, filter ControlCom
 		out = append(out, &rows[i])
 	}
 	return out, nil
+}
+
+func (m *customControlCommandsModel) ClaimQueued(ctx context.Context, limit int) ([]*ControlCommands, error) {
+	if m == nil || m.conn == nil {
+		return nil, sql.ErrConnDone
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	query := fmt.Sprintf(`WITH selected AS (
+    SELECT id FROM public.control_commands
+    WHERE status = 'queued'
+    ORDER BY created_at ASC, id ASC
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE public.control_commands
+SET status = 'processing', updated_at = NOW()
+WHERE id IN (SELECT id FROM selected)
+RETURNING %s`, controlCommandsRows)
+	var rows []ControlCommands
+	if err := m.conn.QueryRowsCtx(ctx, &rows, query, limit); err != nil {
+		return nil, err
+	}
+	out := make([]*ControlCommands, 0, len(rows))
+	for i := range rows {
+		out = append(out, &rows[i])
+	}
+	return out, nil
+}
+
+func (m *customControlCommandsModel) UpdateStatus(ctx context.Context, id, status string, submitted bool, detail string) error {
+	if m == nil || m.conn == nil {
+		return sql.ErrConnDone
+	}
+	if strings.TrimSpace(detail) == "" {
+		detail = "{}"
+	}
+	const query = `UPDATE public.control_commands
+SET status = $2, submitted = $3, detail = $4, updated_at = NOW()
+WHERE id = $1`
+	_, err := m.conn.ExecCtx(ctx, query, strings.TrimSpace(id), strings.TrimSpace(status), submitted, detail)
+	return err
 }

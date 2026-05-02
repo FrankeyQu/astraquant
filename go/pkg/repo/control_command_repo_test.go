@@ -108,16 +108,74 @@ func TestControlCommandRepositoryRequiresTargetID(t *testing.T) {
 	require.ErrorContains(t, err, "decision id required")
 }
 
+func TestControlCommandRepositoryClaimsAndCompletesCommands(t *testing.T) {
+	createdAt := time.Date(2026, 5, 2, 1, 2, 3, 0, time.UTC)
+	fake := &fakeControlCommandsModel{
+		listRows: []*model.ControlCommands{
+			{
+				Id:               "cmd-1",
+				CommandType:      "decision_approve",
+				Target:           "decision",
+				DecisionId:       sql.NullString{String: "decision-1", Valid: true},
+				Action:           "approve",
+				RequestedBy:      "operator",
+				Reason:           "run",
+				CorrelationId:    "corr-1",
+				Status:           "processing",
+				Queued:           true,
+				ControlPlaneOnly: true,
+				Submitted:        false,
+				Detail:           "{}",
+				CreatedAt:        createdAt,
+				UpdatedAt:        createdAt,
+			},
+		},
+	}
+	repository := NewControlCommandRepository(fake)
+
+	claimed, err := repository.ClaimQueued(context.Background(), 5)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	require.Equal(t, "cmd-1", claimed[0].ID)
+	require.Equal(t, 5, fake.claimLimit)
+
+	err = repository.Complete(context.Background(), "cmd-1", true, []byte(`{"ok":true}`))
+	require.NoError(t, err)
+	require.Equal(t, "cmd-1", fake.updatedID)
+	require.Equal(t, ControlCommandStatusCompleted, fake.updatedStatus)
+	require.True(t, fake.updatedSubmitted)
+	require.Contains(t, fake.updatedDetail, `"ok":true`)
+	require.Contains(t, fake.updatedDetail, "terminal_at")
+}
+
+func TestControlCommandRepositoryFailsWithTerminalReason(t *testing.T) {
+	fake := &fakeControlCommandsModel{}
+	repository := NewControlCommandRepository(fake)
+
+	err := repository.Fail(context.Background(), "cmd-1", "policy rejected", []byte(`{"error":"size"}`))
+
+	require.NoError(t, err)
+	require.Equal(t, ControlCommandStatusFailed, fake.updatedStatus)
+	require.False(t, fake.updatedSubmitted)
+	require.Contains(t, fake.updatedDetail, `"error":"size"`)
+	require.Contains(t, fake.updatedDetail, `"terminal_reason":"policy rejected"`)
+}
+
 type fakeControlCommandsModel struct {
-	inserted     *model.ControlCommands
-	existing     *model.ControlCommands
-	listRows     []*model.ControlCommands
-	listFilter   model.ControlCommandsFilter
-	err          error
-	findTarget   string
-	findTargetID string
-	findAction   string
-	findKey      string
+	inserted         *model.ControlCommands
+	existing         *model.ControlCommands
+	listRows         []*model.ControlCommands
+	listFilter       model.ControlCommandsFilter
+	err              error
+	claimLimit       int
+	updatedID        string
+	updatedStatus    string
+	updatedSubmitted bool
+	updatedDetail    string
+	findTarget       string
+	findTargetID     string
+	findAction       string
+	findKey          string
 }
 
 func (m *fakeControlCommandsModel) Insert(_ context.Context, data *model.ControlCommands) error {
@@ -151,4 +209,23 @@ func (m *fakeControlCommandsModel) List(_ context.Context, filter model.ControlC
 	}
 	m.listFilter = filter
 	return m.listRows, nil
+}
+
+func (m *fakeControlCommandsModel) ClaimQueued(_ context.Context, limit int) ([]*model.ControlCommands, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	m.claimLimit = limit
+	return m.listRows, nil
+}
+
+func (m *fakeControlCommandsModel) UpdateStatus(_ context.Context, id, status string, submitted bool, detail string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.updatedID = id
+	m.updatedStatus = status
+	m.updatedSubmitted = submitted
+	m.updatedDetail = detail
+	return nil
 }

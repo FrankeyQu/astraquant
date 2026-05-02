@@ -17,7 +17,11 @@ import (
 )
 
 const (
-	ControlCommandStatusQueued = "queued"
+	ControlCommandStatusQueued     = "queued"
+	ControlCommandStatusProcessing = "processing"
+	ControlCommandStatusCompleted  = "completed"
+	ControlCommandStatusFailed     = "failed"
+	ControlCommandStatusCancelled  = "cancelled"
 
 	ControlCommandTargetDecision = "decision"
 	ControlCommandTargetOrder    = "order"
@@ -55,6 +59,10 @@ type ControlCommandListFilter struct {
 type ControlCommandRepository interface {
 	Enqueue(ctx context.Context, record ControlCommandRecord) (ControlCommandRecord, bool, error)
 	List(ctx context.Context, filter ControlCommandListFilter) ([]ControlCommandRecord, error)
+	ClaimQueued(ctx context.Context, limit int) ([]ControlCommandRecord, error)
+	Complete(ctx context.Context, id string, submitted bool, detail json.RawMessage) error
+	Fail(ctx context.Context, id, reason string, detail json.RawMessage) error
+	Cancel(ctx context.Context, id, reason string, detail json.RawMessage) error
 }
 
 type controlCommandRepo struct {
@@ -118,6 +126,47 @@ func (r *controlCommandRepo) List(ctx context.Context, filter ControlCommandList
 		out = append(out, controlCommandFromRow(row))
 	}
 	return out, nil
+}
+
+func (r *controlCommandRepo) ClaimQueued(ctx context.Context, limit int) ([]ControlCommandRecord, error) {
+	if r == nil || r.model == nil {
+		return nil, nil
+	}
+	rows, err := r.model.ClaimQueued(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ControlCommandRecord, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		out = append(out, controlCommandFromRow(row))
+	}
+	return out, nil
+}
+
+func (r *controlCommandRepo) Complete(ctx context.Context, id string, submitted bool, detail json.RawMessage) error {
+	return r.updateTerminal(ctx, id, ControlCommandStatusCompleted, submitted, "", detail)
+}
+
+func (r *controlCommandRepo) Fail(ctx context.Context, id, reason string, detail json.RawMessage) error {
+	return r.updateTerminal(ctx, id, ControlCommandStatusFailed, false, reason, detail)
+}
+
+func (r *controlCommandRepo) Cancel(ctx context.Context, id, reason string, detail json.RawMessage) error {
+	return r.updateTerminal(ctx, id, ControlCommandStatusCancelled, false, reason, detail)
+}
+
+func (r *controlCommandRepo) updateTerminal(ctx context.Context, id, status string, submitted bool, reason string, detail json.RawMessage) error {
+	if r == nil || r.model == nil {
+		return nil
+	}
+	payload, err := terminalCommandDetail(reason, detail)
+	if err != nil {
+		return err
+	}
+	return r.model.UpdateStatus(ctx, strings.TrimSpace(id), status, submitted, string(payload))
 }
 
 func (r *controlCommandRepo) findExisting(ctx context.Context, record ControlCommandRecord) (ControlCommandRecord, error) {
@@ -223,6 +272,25 @@ func normalizeControlCommandDetail(raw json.RawMessage) (json.RawMessage, error)
 		return nil, fmt.Errorf("control command repo: invalid detail json: %w", err)
 	}
 	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(data), nil
+}
+
+func terminalCommandDetail(reason string, raw json.RawMessage) (json.RawMessage, error) {
+	detail := map[string]any{}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 {
+		if err := json.Unmarshal(trimmed, &detail); err != nil {
+			return nil, fmt.Errorf("control command repo: invalid terminal detail json: %w", err)
+		}
+	}
+	if strings.TrimSpace(reason) != "" {
+		detail["terminal_reason"] = strings.TrimSpace(reason)
+	}
+	detail["terminal_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	data, err := json.Marshal(detail)
 	if err != nil {
 		return nil, err
 	}
