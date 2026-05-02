@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zeromicro/go-zero/core/stores/sqlx"
 
+	cachekeys "nof0-api/internal/cache"
 	"nof0-api/internal/model"
 	"nof0-api/pkg/market"
 )
@@ -137,15 +138,88 @@ func TestRecordPriceSeriesPersistsValidTicks(t *testing.T) {
 	require.Contains(t, ticks.rows[0].Raw.String, `"interval":"3m"`)
 }
 
+func TestHydrateCachesRestoresLatestPriceAndMarketContext(t *testing.T) {
+	ts := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+	conn := &recordingSqlConn{}
+	conn.queryRowsFn = func(v any, query string, args ...any) error {
+		switch rows := v.(type) {
+		case *[]priceLatestHydrateRow:
+			*rows = []priceLatestHydrateRow{
+				{Provider: "hyperliquid", Symbol: "BTC", Price: 50000, TsMs: ts.UnixMilli()},
+			}
+		case *[]marketContextHydrateRow:
+			*rows = []marketContextHydrateRow{
+				{
+					Provider:  "hyperliquid",
+					Symbol:    "BTC",
+					Context:   `{"price":50000,"change":{"one_hour":0.01},"funding":{"rate":0.001},"open_interest":{"latest":123},"indicators":{"macd":42},"recorded_at_ms":1777716000000}`,
+					UpdatedAt: ts,
+				},
+			}
+		default:
+			return errUnsupportedTestSQL
+		}
+		return nil
+	}
+	cache := newRecordingCache()
+	svc := &Service{
+		sqlConn: conn,
+		cache:   cache,
+		ttl: cachekeys.TTLSet{
+			Short:  time.Minute,
+			Medium: 2 * time.Minute,
+			Long:   5 * time.Minute,
+		},
+	}
+
+	err := svc.HydrateCaches(context.Background(), []string{" hyperliquid "})
+
+	require.NoError(t, err)
+	queries := conn.querySnapshot()
+	require.Len(t, queries, 2)
+	require.Contains(t, strings.ToLower(queries[0].query), "from public.price_latest")
+	require.Contains(t, strings.ToLower(queries[0].query), "provider = any($1)")
+	require.Len(t, queries[0].args, 1)
+	require.Contains(t, strings.ToLower(queries[1].query), "from public.market_asset_ctx")
+
+	writes := cache.snapshot()
+	require.Contains(t, writes, cachekeys.PriceLatestByProviderKey("hyperliquid", "BTC"))
+	require.Contains(t, writes, cachekeys.PriceLatestKey("BTC"))
+	require.Contains(t, writes, cachekeys.CryptoPricesKey())
+	require.Contains(t, writes, cachekeys.MarketAssetCtxKey("hyperliquid", "BTC"))
+
+	providerPrice, ok := writes[cachekeys.PriceLatestByProviderKey("hyperliquid", "BTC")].value.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, 50000.0, providerPrice["price"])
+	require.Equal(t, ts.UnixMilli(), providerPrice["ts"])
+
+	cryptoPrices, ok := writes[cachekeys.CryptoPricesKey()].value.(map[string]float64)
+	require.True(t, ok)
+	require.Equal(t, 50000.0, cryptoPrices["hyperliquid:BTC"])
+
+	ctxPayload, ok := writes[cachekeys.MarketAssetCtxKey("hyperliquid", "BTC")].value.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, 50000.0, ctxPayload["price"])
+	require.Contains(t, ctxPayload, "oi")
+	require.Equal(t, int64(1777716000000), ctxPayload["timestamp_ms"])
+}
+
 type recordedExec struct {
 	inTx  bool
 	query string
 	args  []any
 }
 
+type recordedQuery struct {
+	query string
+	args  []any
+}
+
 type recordingSqlConn struct {
-	mu    sync.Mutex
-	execs []recordedExec
+	mu          sync.Mutex
+	execs       []recordedExec
+	queries     []recordedQuery
+	queryRowsFn func(v any, query string, args ...any) error
 }
 
 func (c *recordingSqlConn) snapshot() []recordedExec {
@@ -156,11 +230,26 @@ func (c *recordingSqlConn) snapshot() []recordedExec {
 	return out
 }
 
+func (c *recordingSqlConn) querySnapshot() []recordedQuery {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]recordedQuery, len(c.queries))
+	copy(out, c.queries)
+	return out
+}
+
 func (c *recordingSqlConn) record(inTx bool, query string, args ...any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	copied := append([]any(nil), args...)
 	c.execs = append(c.execs, recordedExec{inTx: inTx, query: query, args: copied})
+}
+
+func (c *recordingSqlConn) recordQuery(query string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	copied := append([]any(nil), args...)
+	c.queries = append(c.queries, recordedQuery{query: query, args: copied})
 }
 
 func (c *recordingSqlConn) Exec(query string, args ...any) (sql.Result, error) {
@@ -200,7 +289,11 @@ func (c *recordingSqlConn) QueryRows(any, string, ...any) error {
 	return errUnsupportedTestSQL
 }
 
-func (c *recordingSqlConn) QueryRowsCtx(context.Context, any, string, ...any) error {
+func (c *recordingSqlConn) QueryRowsCtx(_ context.Context, v any, query string, args ...any) error {
+	c.recordQuery(query, args...)
+	if c.queryRowsFn != nil {
+		return c.queryRowsFn(v, query, args...)
+	}
 	return errUnsupportedTestSQL
 }
 
@@ -294,3 +387,105 @@ func (r recordingResult) LastInsertId() (int64, error) { return int64(r), nil }
 func (r recordingResult) RowsAffected() (int64, error) { return int64(r), nil }
 
 var errUnsupportedTestSQL = errors.New("unsupported test sql operation")
+
+type cacheWrite struct {
+	value any
+	ttl   time.Duration
+}
+
+type recordingCache struct {
+	mu     sync.Mutex
+	values map[string]cacheWrite
+}
+
+func newRecordingCache() *recordingCache {
+	return &recordingCache{values: make(map[string]cacheWrite)}
+}
+
+func (c *recordingCache) snapshot() map[string]cacheWrite {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]cacheWrite, len(c.values))
+	for k, v := range c.values {
+		out[k] = v
+	}
+	return out
+}
+
+func (c *recordingCache) Del(keys ...string) error {
+	return c.DelCtx(context.Background(), keys...)
+}
+
+func (c *recordingCache) DelCtx(_ context.Context, keys ...string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, key := range keys {
+		delete(c.values, key)
+	}
+	return nil
+}
+
+func (c *recordingCache) Get(key string, val any) error {
+	return c.GetCtx(context.Background(), key, val)
+}
+
+func (c *recordingCache) GetCtx(_ context.Context, key string, val any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.values[key]
+	if !ok {
+		return errRecordingCacheNotFound
+	}
+	switch dest := val.(type) {
+	case *map[string]float64:
+		value, ok := entry.value.(map[string]float64)
+		if !ok {
+			return errUnsupportedTestSQL
+		}
+		*dest = value
+	default:
+		return errUnsupportedTestSQL
+	}
+	return nil
+}
+
+func (c *recordingCache) IsNotFound(err error) bool {
+	return errors.Is(err, errRecordingCacheNotFound)
+}
+
+func (c *recordingCache) Set(key string, val any) error {
+	return c.SetWithExpireCtx(context.Background(), key, val, 0)
+}
+
+func (c *recordingCache) SetCtx(ctx context.Context, key string, val any) error {
+	return c.SetWithExpireCtx(ctx, key, val, 0)
+}
+
+func (c *recordingCache) SetWithExpire(key string, val any, expire time.Duration) error {
+	return c.SetWithExpireCtx(context.Background(), key, val, expire)
+}
+
+func (c *recordingCache) SetWithExpireCtx(_ context.Context, key string, val any, expire time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.values[key] = cacheWrite{value: val, ttl: expire}
+	return nil
+}
+
+func (c *recordingCache) Take(any, string, func(any) error) error {
+	return errUnsupportedTestSQL
+}
+
+func (c *recordingCache) TakeCtx(context.Context, any, string, func(any) error) error {
+	return errUnsupportedTestSQL
+}
+
+func (c *recordingCache) TakeWithExpire(any, string, func(any, time.Duration) error) error {
+	return errUnsupportedTestSQL
+}
+
+func (c *recordingCache) TakeWithExpireCtx(context.Context, any, string, func(any, time.Duration) error) error {
+	return errUnsupportedTestSQL
+}
+
+var errRecordingCacheNotFound = errors.New("recording cache not found")

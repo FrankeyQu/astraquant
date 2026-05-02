@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"nof0-api/internal/cache"
 	"nof0-api/internal/cli"
 	appconfig "nof0-api/internal/config"
+	"nof0-api/internal/consistency"
 	"nof0-api/internal/ingest"
 	enginepersist "nof0-api/internal/persistence/engine"
 	marketpersist "nof0-api/internal/persistence/market"
@@ -109,6 +111,19 @@ func parseSymbols(raw string) []string {
 		seen[field] = struct{}{}
 		out = append(out, field)
 	}
+	return out
+}
+
+func marketProviderNames(providers map[string]marketpkg.Provider) []string {
+	out := make([]string, 0, len(providers))
+	for name, provider := range providers {
+		name = strings.TrimSpace(name)
+		if name == "" || provider == nil {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -474,12 +489,35 @@ func main() {
 		}
 		hydrateCancel()
 	}
+	if marketHydrator, ok := marketPersist.(interface {
+		HydrateCaches(context.Context, []string) error
+	}); ok {
+		hydrateCtx, hydrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := marketHydrator.HydrateCaches(hydrateCtx, marketProviderNames(filteredMarkets)); err != nil {
+			logx.Errorf("market: hydrate caches err=%v", err)
+		}
+		hydrateCancel()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if ingestor != nil {
 		go ingestor.Run(ctx)
+	}
+	if svcCtx != nil && svcCtx.DBConn != nil && svcCtx.Cache != nil {
+		if checker := consistency.NewMarketChecker(consistency.MarketCheckerConfig{
+			SQLConn:           svcCtx.DBConn,
+			Cache:             svcCtx.Cache,
+			Providers:         filteredMarkets,
+			Symbols:           allowedSymbols,
+			MaxAge:            2 * time.Minute,
+			PriceTolerancePct: 0.001,
+			ExchangeTimeout:   5 * time.Second,
+			CompareExchange:   true,
+		}); checker != nil {
+			go checker.RunPeriodic(ctx, 2*time.Minute)
+		}
 	}
 
 	sigCh := make(chan os.Signal, 1)
