@@ -489,12 +489,13 @@ type TraderControlResponse struct {
 }
 
 type DecisionActionRequest struct {
-	DecisionId     string `path:"decisionId"`
-	TraderId       string `json:"trader_id,optional"`
-	RequestedBy    string `json:"requested_by"`
-	Reason         string `json:"reason"`
-	IdempotencyKey string `json:"idempotency_key,optional"`
-	CorrelationId  string `json:"correlation_id,optional"`
+	DecisionId     string                 `path:"decisionId"`
+	TraderId       string                 `json:"trader_id,optional"`
+	RequestedBy    string                 `json:"requested_by"`
+	Reason         string                 `json:"reason"`
+	Decision       map[string]interface{} `json:"decision,optional"`
+	IdempotencyKey string                 `json:"idempotency_key,optional"`
+	CorrelationId  string                 `json:"correlation_id,optional"`
 }
 
 type DecisionActionResponse struct {

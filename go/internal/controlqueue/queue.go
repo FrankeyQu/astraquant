@@ -3,6 +3,7 @@ package controlqueue
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type Command struct {
 	OrderID          string
 	TraderID         string
 	Action           string
+	Decision         json.RawMessage
 	RequestedBy      string
 	Reason           string
 	IdempotencyKey   string
@@ -41,6 +43,7 @@ type EnqueueRequest struct {
 	OrderID        string
 	TraderID       string
 	Action         string
+	Decision       json.RawMessage
 	RequestedBy    string
 	Reason         string
 	IdempotencyKey string
@@ -100,6 +103,7 @@ func (q *Queue) Enqueue(req EnqueueRequest) EnqueueResult {
 		OrderID:          req.OrderID,
 		TraderID:         req.TraderID,
 		Action:           req.Action,
+		Decision:         req.Decision,
 		RequestedBy:      req.RequestedBy,
 		Reason:           req.Reason,
 		IdempotencyKey:   req.IdempotencyKey,

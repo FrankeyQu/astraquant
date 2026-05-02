@@ -26,8 +26,8 @@ Trader lifecycle endpoints are connected to a safe control-plane state recorder.
 | `POST` | `/api/traders/:traderId/stop` | same as start |
 | `POST` | `/api/traders/:traderId/pause` | same as start plus optional `effective_until` RFC3339 |
 | `POST` | `/api/traders/:traderId/resume` | same as start |
-| `POST` | `/api/decisions/:decisionId/approve` | optional `trader_id`, `requested_by`, `reason`, optional `idempotency_key`, `correlation_id` |
-| `POST` | `/api/decisions/:decisionId/reject` | same as approve |
+| `POST` | `/api/decisions/:decisionId/approve` | optional `trader_id`, `requested_by`, `reason`, `decision`, optional `idempotency_key`, `correlation_id` |
+| `POST` | `/api/decisions/:decisionId/reject` | same as approve, but `decision` is optional |
 | `POST` | `/api/orders/preview` | `trader_id`, optional `decision_id`, `correlation_id`, `orders`, `risk_context` |
 | `POST` | `/api/orders/:orderId/approve` | optional `trader_id`, `requested_by`, `reason`, optional `idempotency_key`, `correlation_id` |
 | `POST` | `/api/orders/:orderId/reject` | same as approve |
@@ -51,6 +51,8 @@ Trader lifecycle responses share the shape:
 ```
 
 Decision and order approve/reject endpoints enqueue control-plane commands and record an audit event when `AuditEventRepo` is available. When the database is configured, commands are persisted in `control_commands`; otherwise the API falls back to the in-memory command queue. They do **not** submit orders, do **not** execute persisted decisions, and do **not** bypass `manager.ApproveDecision`. `idempotency_key` reuses the same queued command for the same target/action/key combination.
+
+Decision approval requests must include a complete `decision` object using snake_case fields such as `symbol`, `action`, `leverage`, `position_size_usd`, `entry_price`, `stop_loss`, `take_profit`, `risk_usd`, `confidence`, `reasoning`, and `invalidation_condition`. The API normalizes that payload into `control_commands.detail.decision` so the guarded worker can replay it through `Manager.ExecuteDecision`.
 
 Decision and order action responses share this safe command shape:
 
