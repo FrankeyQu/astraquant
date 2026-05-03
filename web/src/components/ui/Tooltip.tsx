@@ -26,18 +26,12 @@ export default function Tooltip({
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const closeTimer = useRef<any>(null);
   const raf = useRef<number | null>(null);
-  const [coarse, setCoarse] = useState(false);
+  const [coarse] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(pointer: coarse)").matches;
+  });
   const EDGE = 12; // 视口边距
   const MAXW = 420; // 桌面最大宽度
-
-  useEffect(() => {
-    try {
-      // detect coarse pointer (mobile/touch)
-      setCoarse(
-        window.matchMedia && window.matchMedia("(pointer: coarse)").matches,
-      );
-    } catch {}
-  }, []);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent | TouchEvent | PointerEvent) => {
