@@ -14,6 +14,7 @@ export interface RawPositionRow {
   leverage: number;
   quantity: number; // positive long, negative short
   current_price: number;
+  liquidation_price?: number;
   unrealized_pnl: number;
   closed_pnl?: number;
 }

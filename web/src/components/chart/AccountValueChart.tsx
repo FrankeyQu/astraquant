@@ -27,12 +27,18 @@ type Mode = "$" | "%";
 
 interface ChartDataPoint {
   timestamp: Date;
-  [modelId: string]: Date | number;
+  [modelId: string]: Date | number | undefined;
 }
 
 interface SeriesPoint {
   timestamp: number;
   [modelId: string]: number;
+}
+
+interface EndDotProps {
+  cx?: number;
+  cy?: number;
+  index?: number;
 }
 
 const MAX_POINTS_72H = 600;
@@ -145,7 +151,7 @@ export default function AccountValueChart() {
         for (const id of nextIds) {
           const value = (p as SeriesPoint)[id];
           if (typeof value === "number") {
-            (row as any)[id] = value;
+            row[id] = value;
           }
         }
         nextRows.push(row);
@@ -163,13 +169,13 @@ export default function AccountValueChart() {
       for (const id of nextIds) {
         const value = (p as SeriesPoint)[id];
         if (typeof value === "number") {
-          (row as any)[id] = value;
+          row[id] = value;
         }
       }
       if (p.timestamp === (lastTsRef.current as number)) {
         // in-place merge for the last timestamp
         const idx = nextRows.length - 1;
-        nextRows[idx] = { ...nextRows[idx], ...row } as any;
+        nextRows[idx] = { ...nextRows[idx], ...row };
       } else {
         nextRows.push(row);
         lastTsRef.current = p.timestamp;
@@ -222,7 +228,7 @@ export default function AccountValueChart() {
         }
       }
       points = points.map((p) => {
-        const cp: ChartDataPoint = { ...p } as any;
+        const cp: ChartDataPoint = { ...p };
         for (const id of ids) {
           const base = bases[id];
           const v = p[id];
@@ -253,7 +259,7 @@ export default function AccountValueChart() {
     const m: Record<string, number> = {};
     for (const id of models) {
       for (let i = data.length - 1; i >= 0; i--) {
-        const v = (data[i] as any)[id];
+        const v = data[i]?.[id];
         if (typeof v === "number") {
           m[id] = i;
           break;
@@ -268,7 +274,7 @@ export default function AccountValueChart() {
     for (const id of models) {
       const idx = lastIdxById[id];
       if (typeof idx === "number") {
-        const v = (data[idx] as any)?.[id];
+        const v = data[idx]?.[id];
         if (typeof v === "number") m[id] = v;
       }
     }
@@ -290,8 +296,7 @@ export default function AccountValueChart() {
   };
 
   const renderEndDot = (id: string) => {
-    function EndDot(p: any) {
-      const { cx, cy, index } = p || {};
+    function EndDot({ cx, cy, index }: EndDotProps) {
       if (cx == null || cy == null) return <g key={`empty-${id}-${index}`} />;
       if (typeof lastIdxById[id] !== "number" || index !== lastIdxById[id])
         return <g key={`empty-${id}-${index}`} />;
@@ -342,8 +347,8 @@ export default function AccountValueChart() {
           {/* theme-aware solid chip behind logo for contrast */}
           <circle
             r={Math.round(size * 0.55)}
-            fill={bg as any}
-            stroke={ring as any}
+            fill={bg}
+            stroke={ring}
             strokeWidth={1}
           />
           {icon ? (

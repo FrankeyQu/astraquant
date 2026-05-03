@@ -14,6 +14,8 @@ export interface AccountTotalsRow {
   account_value?: number;
   realized_pnl?: number;
   unrealized_pnl?: number;
+  total_unrealized_pnl?: number;
+  cum_pnl_pct?: number;
   return_pct?: number;
   since_inception_hourly_marker?: number;
   hourly_marker?: number;

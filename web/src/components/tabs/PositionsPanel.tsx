@@ -12,6 +12,8 @@ import { useSearchParams } from "next/navigation";
 import { getModelColor, getModelName } from "@/lib/model/meta";
 import { ModelLogoChip } from "@/components/shared/ModelLogo";
 import CoinIcon from "@/components/shared/CoinIcon";
+import type { AccountTotalsRow } from "@/lib/api/hooks/useAccountTotals";
+import type { ExitPlan, RawPositionRow } from "@/lib/api/hooks/usePositions";
 
 type SortKey =
   | "symbol"
@@ -20,6 +22,10 @@ type SortKey =
   | "current_price"
   | "unrealized_pnl"
   | "side";
+
+type PositionWithSide = RawPositionRow & {
+  side: "LONG" | "SHORT";
+};
 
 export function PositionsPanel() {
   // remove theme branching; rely on CSS variables
@@ -82,10 +88,7 @@ export function PositionsPanel() {
           qModel === "all" ? true : m.id.toLowerCase() === qModel,
         )
         .map((m) => {
-          const positionsRaw = Object.values(m.positions || {});
-          type PositionWithSide = (typeof positionsRaw)[number] & {
-            side: "LONG" | "SHORT";
-          };
+          const positionsRaw = Object.values(m.positions || {}) as RawPositionRow[];
           const positions = (() => {
             const arr: PositionWithSide[] = positionsRaw.map((p) => ({
               ...p,
@@ -93,8 +96,8 @@ export function PositionsPanel() {
             }));
             const dir = sortDir === "asc" ? 1 : -1;
             return arr.sort((a, b) => {
-              const av = sortKey === "side" ? a.side : a[sortKey];
-              const bv = sortKey === "side" ? b.side : b[sortKey];
+              const av = getPositionSortValue(a, sortKey);
+              const bv = getPositionSortValue(b, sortKey);
               if (av == null && bv == null) return 0;
               if (av == null) return 1;
               if (bv == null) return -1;
@@ -104,10 +107,10 @@ export function PositionsPanel() {
             });
           })();
           const filtered = positions
-            .filter((p: any) =>
+            .filter((p) =>
               qSymbol === "ALL" ? true : p.symbol?.toUpperCase() === qSymbol,
             )
-            .filter((p: any) =>
+            .filter((p) =>
               qSide === "ALL"
                 ? true
                 : (p.quantity > 0 ? "LONG" : "SHORT") === qSide,
@@ -132,10 +135,7 @@ export function PositionsPanel() {
           // Extract latest totals snapshot for this model
           let equity: number | undefined;
           let realizedPnL: number | undefined;
-          const list: any[] =
-            totalsData && (totalsData as any).accountTotals
-              ? (totalsData as any).accountTotals
-              : [];
+          const list: AccountTotalsRow[] = totalsData?.accountTotals ?? [];
           for (let i = list.length - 1; i >= 0; i--) {
             const row = list[i];
             if (row?.model_id === m.id || row?.id === m.id) {
@@ -153,8 +153,8 @@ export function PositionsPanel() {
               key={m.id}
               className={`rounded-md border p-3`}
               style={{
-                background: brandBg as any,
-                borderColor: brandBorder as any,
+                background: brandBg,
+                borderColor: brandBorder,
               }}
             >
               <div className="mb-2 flex items-center justify-between">
@@ -284,7 +284,7 @@ export function PositionsPanel() {
   );
 }
 
-function ExitPlanPeek({ plan }: { plan?: any }) {
+function ExitPlanPeek({ plan }: { plan?: ExitPlan }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
@@ -386,4 +386,26 @@ function ExitPlanPeek({ plan }: { plan?: any }) {
         )}
     </>
   );
+}
+
+function getPositionSortValue(
+  row: PositionWithSide,
+  key: SortKey,
+): string | number | undefined {
+  switch (key) {
+    case "symbol":
+      return row.symbol;
+    case "leverage":
+      return row.leverage;
+    case "entry_price":
+      return row.entry_price;
+    case "current_price":
+      return row.current_price;
+    case "unrealized_pnl":
+      return row.unrealized_pnl;
+    case "side":
+      return row.side;
+    default:
+      return undefined;
+  }
 }
