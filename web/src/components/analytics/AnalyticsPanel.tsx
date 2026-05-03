@@ -2,6 +2,7 @@
 import { useAnalytics } from "@/lib/api/hooks/useAnalytics";
 import CoinIcon from "@/components/shared/CoinIcon";
 import ErrorBanner from "@/components/ui/ErrorBanner";
+import type { JsonObject, JsonValue } from "@/lib/api/types";
 
 export default function AnalyticsPanel() {
   const { data, isLoading, isError } = useAnalytics();
@@ -83,14 +84,14 @@ function Block({
   );
 }
 
-function MiniTable({ rows }: { rows: any[] }) {
+function MiniTable({ rows }: { rows: JsonObject[] }) {
   if (!rows?.length)
     return (
       <div className="text-xs" style={{ color: "var(--muted-text)" }}>
         暂无数据
       </div>
     );
-  const cols = Object.keys(rows[0] || {});
+  const cols = Object.keys(rows[0] ?? {});
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-[11px]">
@@ -144,8 +145,10 @@ function fmtPct(n?: number) {
   if (n == null) return "—";
   return (n * 100).toFixed(1) + "%";
 }
-function fmtAny(v: any) {
+function fmtAny(v: JsonValue | undefined) {
   if (v == null) return "—";
   if (typeof v === "number") return String(Math.round(v * 1000) / 1000);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }

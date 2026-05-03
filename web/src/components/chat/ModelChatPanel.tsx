@@ -1,12 +1,34 @@
 "use client";
-import { useConversations } from "@/lib/api/hooks/useConversations";
+import { useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
-import { useMemo, useState } from "react";
-import { getModelName, getModelColor } from "@/lib/model/meta";
-import { ModelLogoChip } from "@/components/shared/ModelLogo";
-// theme handled via CSS variables
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+import { useConversations, type ConversationItem } from "@/lib/api/hooks/useConversations";
+import type { JsonValue } from "@/lib/api/types";
+import { getModelName, getModelColor } from "@/lib/model/meta";
+import { ModelLogoChip } from "@/components/shared/ModelLogo";
+
+type ChatEntry = {
+  model_id: string;
+  timestamp: number | string;
+  content?: string;
+  user_prompt?: string;
+  cot_trace?: JsonValue;
+  llm_response?: JsonValue;
+};
+
+type DecisionRow = {
+  coin: string;
+  signal?: string;
+  leverage?: number;
+  target?: number;
+  stop?: number;
+  risk?: number;
+  invalid?: string;
+  confidence?: number;
+  quantity?: number;
+};
 
 export default function ModelChatPanel() {
   const { items, isLoading, isError } = useConversations();
@@ -14,70 +36,52 @@ export default function ModelChatPanel() {
   const router = useRouter();
   const pathname = usePathname();
   const qModel = (search.get("model") || "ALL").trim();
-  // use CSS variables for colors instead of theme branching
 
-  // Flat list across all models, sorted by time desc
   const list = useMemo(() => {
-    const arr: {
-      model_id: string;
-      timestamp: number | string;
-      content?: string;
-      user_prompt?: string;
-      cot_trace?: any;
-      llm_response?: any;
-    }[] = [];
-    for (const it of items) {
-      const id = (it as any).model_id;
-      if (!id) continue;
-      const ts = (it as any).timestamp || (it as any).inserted_at || 0;
-      const content =
-        (it as any).cot_trace_summary || (it as any).summary || "";
-      const user_prompt = (it as any).user_prompt || "";
-      const cot_trace = (it as any).cot_trace || {};
-      const llm_response = (it as any).llm_response || {};
-      arr.push({
-        model_id: id,
-        timestamp: ts,
-        content,
-        user_prompt,
-        cot_trace,
-        llm_response,
-      });
-    }
-    arr.sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
+    const arr: ChatEntry[] = items
+      .map((it) => ({
+        model_id: it.model_id,
+        timestamp: it.timestamp ?? it.inserted_at ?? 0,
+        content: it.cot_trace_summary ?? it.summary ?? "",
+        user_prompt: it.user_prompt ?? "",
+        cot_trace: it.cot_trace,
+        llm_response: it.llm_response,
+      }))
+      .sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
     return qModel === "ALL" ? arr : arr.filter((r) => r.model_id === qModel);
   }, [items, qModel]);
 
-  // Note: Translation prefetching has been removed.
-
-  if (isLoading)
+  if (isLoading) {
     return (
-      <div className={`text-xs`} style={{ color: "var(--muted-text)" }}>
+      <div className="text-xs" style={{ color: "var(--muted-text)" }}>
         加载模型对话中…
       </div>
     );
-  if (isError)
+  }
+  if (isError) {
     return (
-      <div className={`text-xs`} style={{ color: "red" }}>
+      <div className="text-xs" style={{ color: "red" }}>
         模型对话接口暂不可用，请稍后重试。
       </div>
     );
-  if (!list.length)
+  }
+  if (!list.length) {
     return (
-      <div className={`text-xs`} style={{ color: "var(--muted-text)" }}>
+      <div className="text-xs" style={{ color: "var(--muted-text)" }}>
         暂无模型对话。
       </div>
     );
+  }
 
   return (
     <div className="space-y-3">
       <FilterBar
         model={qModel}
-        onChange={(v) => setModel(v)}
+        onChange={setModel}
         models={[
           "ALL",
           ...Array.from(
-            new Set(items.map((i: any) => i?.model_id).filter(Boolean)),
+            new Set(items.map((i) => i.model_id).filter((id) => id.length > 0)),
           ),
         ]}
       />
@@ -121,16 +125,15 @@ function FilterBar({
   onChange: (v: string) => void;
   models: string[];
 }) {
-  // theme vars only
   const uniq = Array.from(new Set(models));
   return (
     <div
       className="mb-1 flex items-center gap-2 text-[12px]"
       style={{ color: "var(--muted-text)" }}
     >
-      <span className={`ui-sans font-semibold tracking-wide`}>筛选：</span>
+      <span className="ui-sans font-semibold tracking-wide">筛选：</span>
       <select
-        className={`rounded border px-2 py-1 text-xs`}
+        className="rounded border px-2 py-1 text-xs"
         style={{
           borderColor: "var(--panel-border)",
           background: "var(--panel-bg)",
@@ -162,34 +165,31 @@ function ChatCard({
   content?: string;
   timestamp?: number | string;
   user_prompt?: string;
-  cot_trace?: any;
-  llm_response?: any;
-  history?: any[];
+  cot_trace?: JsonValue;
+  llm_response?: JsonValue;
+  history?: ConversationItem[];
 }) {
   const color = getModelColor(modelId);
   const [open, setOpen] = useState(false);
   const [openHist, setOpenHist] = useState<Record<string, boolean>>({});
 
-  // Translation cache and toggles removed; render content as-is
   return (
     <div>
-      {/* header line: model name + timestamp (no small icon here) */}
       <div className="mb-2 flex items-center justify-between pl-8">
         <div
-          className={`ui-sans text-sm font-extrabold uppercase tracking-wide`}
+          className="ui-sans text-sm font-extrabold uppercase tracking-wide"
           style={{ color }}
         >
           {getModelName(modelId)}
         </div>
         <div
-          className={`text-[11px] tabular-nums`}
+          className="text-[11px] tabular-nums"
           style={{ color: "var(--muted-text)" }}
         >
           {fmtTime(timestamp)}
         </div>
       </div>
 
-      {/* bubble with left icon aligned flush to top */}
       <div className="relative pl-8">
         <div className="absolute left-0 top-0">
           <ModelLogoChip modelId={modelId} size="md" />
@@ -202,23 +202,22 @@ function ChatCard({
           }}
         >
           <div
-            className={`whitespace-pre-wrap terminal-text text-xs leading-relaxed`}
+            className="whitespace-pre-wrap terminal-text text-xs leading-relaxed"
             style={{ color: "var(--foreground)" }}
           >
             {content || "(no summary)"}
           </div>
           <button
-            className={`absolute bottom-1 right-2 text-[11px] italic`}
+            className="absolute bottom-1 right-2 text-[11px] italic"
             style={{ color: "var(--muted-text)" }}
             onClick={() => setOpen(!open)}
           >
             {open ? "收起" : "点击展开"}
           </button>
-          {/* translation toggle removed */}
         </div>
       </div>
 
-      {open && (
+      {open ? (
         <div className="mt-3 space-y-3 text-[12px]">
           <Section title="USER_PROMPT">
             <MarkdownBlock text={user_prompt} />
@@ -228,7 +227,7 @@ function ChatCard({
               <MarkdownBlock text={cot_trace} />
             ) : (
               <pre
-                className={`whitespace-pre-wrap terminal-text text-xs leading-relaxed`}
+                className="whitespace-pre-wrap terminal-text text-xs leading-relaxed"
                 style={{ color: "var(--foreground)" }}
               >
                 {formatCot(cot_trace)}
@@ -239,12 +238,12 @@ function ChatCard({
             {renderDecisions(llm_response)}
           </Section>
         </div>
-      )}
+      ) : null}
 
-      {!!history?.length && (
+      {!!history?.length ? (
         <div className="mt-4">
           <div
-            className={`ui-sans mb-1 text-[11px] font-semibold`}
+            className="ui-sans mb-1 text-[11px] font-semibold"
             style={{ color: "var(--muted-text)" }}
           >
             历史对话
@@ -256,16 +255,16 @@ function ChatCard({
               return (
                 <div
                   key={key}
-                  className={`rounded border p-2`}
+                  className="rounded border p-2"
                   style={{ borderColor: "var(--panel-border)" }}
                 >
                   <div
-                    className={`mb-1 flex items-center justify-between text-[11px]`}
+                    className="mb-1 flex items-center justify-between text-[11px]"
                     style={{ color: "var(--muted-text)" }}
                   >
                     <span>{fmtTime(h.timestamp)}</span>
                     <button
-                      className={`text-[11px] italic`}
+                      className="text-[11px] italic"
                       style={{ color: "var(--muted-text)" }}
                       onClick={() =>
                         setOpenHist({ ...openHist, [key]: !isOpen })
@@ -274,7 +273,7 @@ function ChatCard({
                       {isOpen ? "收起" : "点击展开"}
                     </button>
                   </div>
-                  {isOpen && (
+                  {isOpen ? (
                     <div className="space-y-2">
                       <Section title="USER_PROMPT">
                         <MarkdownBlock text={h.user_prompt} />
@@ -295,13 +294,13 @@ function ChatCard({
                         {renderDecisions(h.llm_response)}
                       </Section>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               );
             })}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -311,7 +310,7 @@ function Section({
   children,
 }: {
   title: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div>
@@ -331,7 +330,12 @@ function Section({
   );
 }
 
-function formatCot(cot: any) {
+type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
+  inline?: boolean;
+  node?: unknown;
+};
+
+function formatCot(cot: JsonValue | undefined): string {
   try {
     return JSON.stringify(cot ?? {}, null, 2);
   } catch {
@@ -339,7 +343,6 @@ function formatCot(cot: any) {
   }
 }
 
-// Normalize and render markdown with GFM, respecting theme colors
 function MarkdownBlock({ text }: { text?: string }) {
   const norm = normalizeMd(text);
   if (!norm) return <span style={{ color: "var(--muted-text)" }}>—</span>;
@@ -354,7 +357,7 @@ function MarkdownBlock({ text }: { text?: string }) {
           a: (props) => (
             <a {...props} style={{ color: "var(--brand-accent)" }} />
           ),
-          code: ({ inline, children, ...props }: any) =>
+          code: ({ inline, children, ...props }: MarkdownCodeProps) =>
             inline ? (
               <code
                 className="px-1"
@@ -396,33 +399,31 @@ function MarkdownBlock({ text }: { text?: string }) {
 function normalizeMd(s?: string): string {
   if (!s) return "";
   let t = String(s);
-  // If it's a JSON-encoded string with escapes, try to parse once.
   if (/^"[\s\S]*"$/.test(t) && /\\n|\\t|\\r/.test(t)) {
     try {
       t = JSON.parse(t);
     } catch {}
   }
-  // Convert literal \n / \t to real whitespace
   t = t.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\r/g, "\r");
-  // Trim a single surrounding quote pair if present
   if (t.length > 1 && t.startsWith('"') && t.endsWith('"')) t = t.slice(1, -1);
   return t;
 }
 
-function renderDecisions(resp: any) {
-  const rows = [] as any[];
-  if (resp && typeof resp === "object") {
-    for (const [coin, v] of Object.entries(resp as Record<string, any>)) {
+function renderDecisions(resp: JsonValue | undefined) {
+  const rows: DecisionRow[] = [];
+  if (isRecord(resp)) {
+    for (const [coin, value] of Object.entries(resp)) {
+      if (!isRecord(value)) continue;
       rows.push({
         coin,
-        signal: (v as any).signal,
-        leverage: (v as any).leverage,
-        target: (v as any).profit_target,
-        stop: (v as any).stop_loss,
-        risk: (v as any).risk_usd,
-        invalid: (v as any).invalidation_condition,
-        confidence: (v as any).confidence,
-        quantity: (v as any).quantity,
+        signal: pickString(value.signal),
+        leverage: pickNumber(value.leverage),
+        target: pickNumber(value.profit_target),
+        stop: pickNumber(value.stop_loss),
+        risk: pickNumber(value.risk_usd),
+        invalid: pickString(value.invalidation_condition),
+        confidence: pickNumber(value.confidence),
+        quantity: pickNumber(value.quantity),
       });
     }
   }
@@ -476,6 +477,18 @@ function renderDecisions(resp: any) {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function pickString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function pickNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
 function signalZh(s?: string) {
   const k = String(s || "").toLowerCase();
   if (k === "hold") return "持有";
@@ -500,7 +513,6 @@ function signalColors(s?: string) {
       border: "color-mix(in oklab, #ef4444 45%, transparent)",
     };
   }
-  // hold/default = blue
   return {
     fg: "#4f46e5",
     bg: "color-mix(in oklab, #4f46e5 10%, transparent)",

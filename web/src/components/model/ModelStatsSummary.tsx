@@ -2,6 +2,7 @@
 import { useMemo } from "react";
 import { useAccountTotals } from "@/lib/api/hooks/useAccountTotals";
 import { useAnalyticsMap } from "@/lib/api/hooks/useAnalyticsMap";
+import type { RawPositionRow } from "@/lib/api/hooks/usePositions";
 import { usePositions } from "@/lib/api/hooks/usePositions";
 import { useTrades } from "@/lib/api/hooks/useTrades";
 import { fmtUSD } from "@/lib/utils/formatters";
@@ -16,19 +17,19 @@ export default function ModelStatsSummary({ modelId }: { modelId: string }) {
   const latest = useMemo(() => {
     const arr = totalsData?.accountTotals ?? [];
     for (let i = arr.length - 1; i >= 0; i--) {
-      const r = arr[i] as any;
+      const r = arr[i];
       const id = String(r.model_id || r.id || "");
-      if (id === modelId) return r as any;
+      if (id === modelId) return r;
     }
     return undefined;
   }, [totalsData, modelId]);
 
   const open = useMemo(() => {
     const found = positionsByModel.find((m) => m.id === modelId);
-    return Object.values(found?.positions || {});
+    return Object.values(found?.positions || {}) as RawPositionRow[];
   }, [positionsByModel, modelId]);
 
-  const a = analytics[modelId] || {};
+  const a = analytics[modelId];
   const fees = a?.fee_pnl_moves_breakdown_table?.total_fees_paid;
   const biggestWin = a?.fee_pnl_moves_breakdown_table?.biggest_net_gain;
   const biggestLoss = a?.fee_pnl_moves_breakdown_table?.biggest_net_loss;
@@ -53,7 +54,7 @@ export default function ModelStatsSummary({ modelId }: { modelId: string }) {
 
   // 估算可用现金：净值 − 持仓保证金合计
   const sumMargin = open.reduce(
-    (acc: number, p: any) => acc + (p.margin || 0),
+    (acc: number, p) => acc + (p.margin || 0),
     0,
   );
   const availableCash =
@@ -68,13 +69,11 @@ export default function ModelStatsSummary({ modelId }: { modelId: string }) {
   );
   const avgLev = useMemo(() => {
     // 1) 首选 overall_trades_overview_table.avg_convo_leverage
-    const fromOverall = (
-      analytics[modelId]?.overall_trades_overview_table as any
-    )?.avg_convo_leverage;
+    const fromOverall =
+      analytics[modelId]?.overall_trades_overview_table?.avg_convo_leverage;
     if (typeof fromOverall === "number" && fromOverall > 0) return fromOverall;
     // 2) 其次 signals_breakdown_table.avg_leverage
-    const fromSignals = (analytics[modelId]?.signals_breakdown_table as any)
-      ?.avg_leverage;
+    const fromSignals = analytics[modelId]?.signals_breakdown_table?.avg_leverage;
     if (typeof fromSignals === "number" && fromSignals > 0) return fromSignals;
     // 3) 回退：最近成交的杠杆均值
     if (!modelTrades.length) return undefined;

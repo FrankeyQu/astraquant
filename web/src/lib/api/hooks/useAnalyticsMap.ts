@@ -10,6 +10,7 @@ export interface AnalyticsRow {
     total_fees_paid?: number;
     biggest_net_gain?: number;
     biggest_net_loss?: number;
+    avg_taker_fee?: number;
     overall_pnl_with_fees?: number;
     overall_pnl_without_fees?: number;
   };

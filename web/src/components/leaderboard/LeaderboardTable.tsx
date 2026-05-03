@@ -1,7 +1,7 @@
 "use client";
 import { useState, useMemo } from "react";
 import { useLeaderboard, LeaderboardRow } from "@/lib/api/hooks/useLeaderboard";
-import { useAnalyticsMap } from "@/lib/api/hooks/useAnalyticsMap";
+import { useAnalyticsMap, type AnalyticsRow } from "@/lib/api/hooks/useAnalyticsMap";
 import { useLatestEquityMap } from "@/lib/api/hooks/useModelSnapshots";
 import { useTradesCountMap } from "@/lib/api/hooks/useTradesCount";
 import { useSharpeMap } from "@/lib/api/hooks/useSharpeMap";
@@ -38,7 +38,7 @@ export default function LeaderboardTable({
 
   const data = useMemo(() => {
     // 预计算派生指标 + 关联 analytics 字段
-    const arr = rows.map((r) =>
+    const arr: LeaderboardRow[] = rows.map((r) =>
       withDerived(
         r,
         analytics[r.id],
@@ -48,7 +48,7 @@ export default function LeaderboardTable({
       ),
     );
     const dir = sortDir === "asc" ? 1 : -1;
-    arr.sort((a: any, b: any) => {
+    arr.sort((a, b) => {
       const av = a[sortKey] ?? 0;
       const bv = b[sortKey] ?? 0;
       return (Number(av) - Number(bv)) * dir;
@@ -150,10 +150,7 @@ export default function LeaderboardTable({
               </>
             ) : (
               data.map(
-                (
-                  r: LeaderboardRow & ReturnType<typeof withDerived>,
-                  idx: number,
-                ) => (
+                (r: LeaderboardRow, idx: number) => (
                   <tr
                     key={r.id}
                     className={clsx("border-b")}
@@ -285,7 +282,7 @@ export default function LeaderboardTable({
   }
 
   function renderFees(id: string, fees?: number) {
-    const a = (analytics as any)?.[id];
+    const a = analytics[id];
     const avg = a?.fee_pnl_moves_breakdown_table?.avg_taker_fee;
     const content = (
       <div className="space-y-1">
@@ -388,11 +385,11 @@ export default function LeaderboardTable({
 const BASE = 10000; // 初始资金
 function withDerived(
   r: LeaderboardRow,
-  a?: any,
+  a?: AnalyticsRow,
   latestEquity?: number,
   trades?: number,
   sharpe?: number,
-) {
+): LeaderboardRow {
   const winRate = a?.winners_losers_breakdown_table?.win_rate as
     | number
     | undefined;
@@ -414,7 +411,7 @@ function withDerived(
     lose_dollars: a?.fee_pnl_moves_breakdown_table?.biggest_net_loss,
     num_trades: trades ?? r.num_trades,
     sharpe: sharpe ?? r.sharpe,
-  } as LeaderboardRow & { win_rate?: number; total_pnl?: number };
+  };
 }
 
 function Th({ label }: { label: string }) {
