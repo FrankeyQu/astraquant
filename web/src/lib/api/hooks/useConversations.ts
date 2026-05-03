@@ -2,6 +2,7 @@
 import useSWR from "swr";
 import { activityAwareRefresh } from "./activityAware";
 import { endpoints, fetcher } from "../nof1";
+import type { JsonValue } from "../types";
 
 export interface ConversationMessage {
   role: string;
@@ -11,12 +12,20 @@ export interface ConversationMessage {
 
 export interface ConversationItem {
   model_id: string;
-  messages: ConversationMessage[];
+  messages?: ConversationMessage[];
+  timestamp?: number | string;
+  inserted_at?: number | string;
+  cot_trace_summary?: string;
+  summary?: string;
+  user_prompt?: string;
+  cot_trace?: JsonValue;
+  llm_response?: JsonValue;
 }
 
 export interface ConversationsResponse {
   conversations?: ConversationItem[];
-  [k: string]: any;
+  items?: ConversationItem[];
+  logs?: ConversationItem[];
 }
 
 export function useConversations() {
@@ -33,9 +42,8 @@ export function useConversations() {
 
 function normalize(data?: ConversationsResponse): ConversationItem[] {
   if (!data) return [];
-  if (Array.isArray(data.conversations)) return data.conversations as any;
-  // lenient fallbacks
-  if (Array.isArray((data as any).items)) return (data as any).items;
-  if (Array.isArray((data as any).logs)) return (data as any).logs;
+  if (Array.isArray(data.conversations)) return data.conversations;
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.logs)) return data.logs;
   return [];
 }

@@ -2,8 +2,9 @@
 import useSWR from "swr";
 import { activityAwareRefresh } from "./activityAware";
 import { endpoints, fetcher } from "../nof1";
+import type { JsonObject } from "../types";
 
-export interface LeaderboardRow {
+export interface LeaderboardRow extends JsonObject {
   id: string; // model_id
   equity: number;
   return_pct?: number;
@@ -11,7 +12,13 @@ export interface LeaderboardRow {
   num_wins?: number;
   num_losses?: number;
   sharpe?: number;
-  [k: string]: any;
+  win_rate?: number;
+  win_dollars?: number;
+  lose_dollars?: number;
+  total_pnl?: number;
+  total_fees_paid?: number;
+  avg_confidence?: number;
+  median_confidence?: number;
 }
 
 interface LeaderboardResponse {

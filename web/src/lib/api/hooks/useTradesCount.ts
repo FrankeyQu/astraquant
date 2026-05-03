@@ -16,7 +16,7 @@ export function useTradesCountMap() {
   );
   const map: Record<string, number> = {};
   for (const t of data?.trades ?? []) {
-    const id = (t as any).model_id;
+    const id = t.model_id;
     if (!id) continue;
     map[id] = (map[id] || 0) + 1;
   }
