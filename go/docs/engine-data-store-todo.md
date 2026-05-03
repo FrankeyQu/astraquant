@@ -36,8 +36,11 @@
 
 ## P3 – resilience & observability (Week 3+)
 
-9. **Error handling & retry strategy.**
-   - Define which DB/cache failures block execution vs. get queued for async retry, and add structured logging/alerting for each failure class.
+9. [x] **Error handling & retry strategy.**
+   - DB write failures remain blocking because they protect execution/audit correctness.
+   - Cache write failures are classified by `internal/persistence/resilience`: transient cache/transport failures are queued for async retry, cache misses are ignored, and non-transient failures emit structured error logs.
+   - Market and engine cache write paths now use the shared retry queue for price/context/assets, positions, trades, analytics, decisions, conversations, and leaderboard caches.
+   - Operational remediation: inspect `cache retry queued`, `persistence retry failed`, and `cache write failed` logs; persistent final failures should be treated as alertable infrastructure issues.
 10. **Performance & monitoring additions.**
     - Introduce batching (COPY/`INSERT ... VALUES` for ticks, Redis pipelining) once correctness is proven.
     - Emit metrics: `db_writes_total`, `persistence_latency_seconds`, cache hit ratios, inconsistency counters.

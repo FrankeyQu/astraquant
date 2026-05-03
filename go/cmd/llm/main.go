@@ -395,6 +395,7 @@ func main() {
 			Cache:                     svcCtx.Cache,
 			Redis:                     svcCtx.Redis,
 			TTL:                       ttlSet,
+			RetryQueue:                svcCtx.PersistenceRetryQueue,
 			ConversationsModel:        svcCtx.ConversationsModel,
 			ConversationMessagesModel: svcCtx.ConversationMessagesModel,
 		})
@@ -405,6 +406,7 @@ func main() {
 			Cache:           svcCtx.Cache,
 			Redis:           svcCtx.Redis,
 			TTL:             ttlSet,
+			RetryQueue:      svcCtx.PersistenceRetryQueue,
 		})
 		if persistService == nil {
 			logx.Slowf("manager persistence disabled: postgres/cache not configured in %s", *appConfig)
