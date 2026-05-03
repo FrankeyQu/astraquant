@@ -9,6 +9,11 @@ import (
 )
 
 func TestResolvePath(t *testing.T) {
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "base", "dir")
+	absFile := filepath.Join(tmp, "absolute", "path", "file.yaml")
+	envHome := filepath.Join(tmp, "env-home")
+
 	tests := []struct {
 		name     string
 		base     string
@@ -18,48 +23,40 @@ func TestResolvePath(t *testing.T) {
 	}{
 		{
 			name:     "absolute path",
-			base:     "/base/dir",
-			file:     "/absolute/path/file.yaml",
-			expected: "/absolute/path/file.yaml",
+			base:     base,
+			file:     absFile,
+			expected: absFile,
 		},
 		{
 			name:     "relative path",
-			base:     "/base/dir",
-			file:     "config/file.yaml",
-			expected: "/base/dir/config/file.yaml",
+			base:     base,
+			file:     filepath.Join("config", "file.yaml"),
+			expected: filepath.Join(base, "config", "file.yaml"),
 		},
 		{
-			name:     "path with env var",
-			base:     "/base/dir",
-			file:     "$HOME/config/file.yaml",
-			expected: os.Getenv("HOME") + "/config/file.yaml",
+			name:     "absolute path with env var",
+			base:     base,
+			file:     "$TEST_CONF_HOME/config/file.yaml",
+			expected: filepath.Join(envHome, "config", "file.yaml"),
+			setupEnv: map[string]string{"TEST_CONF_HOME": envHome},
 		},
 		{
 			name:     "relative path with env var",
-			base:     "/base/dir",
-			file:     "${TEST_VAR}/file.yaml",
-			expected: "testvalue/file.yaml",
-			setupEnv: map[string]string{"TEST_VAR": "testvalue"},
+			base:     base,
+			file:     "${TEST_CONF_REL}/file.yaml",
+			expected: filepath.Join(base, "testvalue", "file.yaml"),
+			setupEnv: map[string]string{"TEST_CONF_REL": "testvalue"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Setup environment variables
-			for k, v := range tt.setupEnv {
-				os.Setenv(k, v)
-				defer os.Unsetenv(k)
+			for key, value := range tt.setupEnv {
+				t.Setenv(key, value)
 			}
 
 			result := confkit.ResolvePath(tt.base, tt.file)
-
-			// For relative paths with env vars, we need to handle the base concatenation
-			if tt.setupEnv != nil && !filepath.IsAbs(tt.file) {
-				expected := filepath.Join(tt.base, os.ExpandEnv(tt.file))
-				if result != expected {
-					t.Errorf("ResolvePath() = %v, want %v", result, expected)
-				}
-			} else if result != tt.expected {
+			if result != tt.expected {
 				t.Errorf("ResolvePath() = %v, want %v", result, tt.expected)
 			}
 		})
@@ -67,24 +64,28 @@ func TestResolvePath(t *testing.T) {
 }
 
 func TestBaseDir(t *testing.T) {
+	tmp := t.TempDir()
+	absMain := filepath.Join(tmp, "etc", "config", "app.yaml")
+	rootMain := filepath.Join(filepath.VolumeName(tmp)+string(os.PathSeparator), "app.yaml")
+
 	tests := []struct {
 		name     string
 		mainPath string
 		expected string
 	}{
 		{
-			name:     "simple path",
-			mainPath: "/etc/config/app.yaml",
-			expected: "/etc/config",
+			name:     "absolute path",
+			mainPath: absMain,
+			expected: filepath.Dir(absMain),
 		},
 		{
 			name:     "root path",
-			mainPath: "/app.yaml",
-			expected: "/",
+			mainPath: rootMain,
+			expected: filepath.Dir(rootMain),
 		},
 		{
 			name:     "relative path",
-			mainPath: "config/app.yaml",
+			mainPath: filepath.Join("config", "app.yaml"),
 			expected: "config",
 		},
 	}
@@ -99,10 +100,10 @@ func TestBaseDir(t *testing.T) {
 	}
 }
 
-func TestSection_Hydrate(t *testing.T) {
+func TestSectionHydrate(t *testing.T) {
 	t.Run("empty file", func(t *testing.T) {
 		section := &confkit.Section[string]{}
-		err := section.Hydrate("/base", func(path string) (*string, error) {
+		err := section.Hydrate(t.TempDir(), func(path string) (*string, error) {
 			t.Error("loader should not be called for empty file")
 			return nil, nil
 		})
@@ -115,12 +116,14 @@ func TestSection_Hydrate(t *testing.T) {
 	})
 
 	t.Run("successful hydration", func(t *testing.T) {
+		base := t.TempDir()
 		section := &confkit.Section[string]{File: "config.yaml"}
 		expected := "test value"
+		expectedPath := filepath.Join(base, "config.yaml")
 
-		err := section.Hydrate("/base", func(path string) (*string, error) {
-			if path != "/base/config.yaml" {
-				t.Errorf("loader received path %v, want /base/config.yaml", path)
+		err := section.Hydrate(base, func(path string) (*string, error) {
+			if path != expectedPath {
+				t.Errorf("loader received path %v, want %v", path, expectedPath)
 			}
 			return &expected, nil
 		})
@@ -131,8 +134,8 @@ func TestSection_Hydrate(t *testing.T) {
 		if section.Value == nil || *section.Value != expected {
 			t.Errorf("Value = %v, want %v", section.Value, expected)
 		}
-		if section.File != "/base/config.yaml" {
-			t.Errorf("File = %v, want /base/config.yaml", section.File)
+		if section.File != expectedPath {
+			t.Errorf("File = %v, want %v", section.File, expectedPath)
 		}
 	})
 }

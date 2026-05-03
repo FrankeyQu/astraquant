@@ -15,7 +15,7 @@ import (
 func ResolvePath(base, file string) string {
 	file = os.ExpandEnv(file)
 	if filepath.IsAbs(file) {
-		return file
+		return filepath.Clean(file)
 	}
 	return filepath.Join(base, file)
 }
