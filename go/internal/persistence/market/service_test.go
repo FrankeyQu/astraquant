@@ -163,6 +163,54 @@ func TestRecordPriceSeriesPersistsValidTicks(t *testing.T) {
 	require.Contains(t, ticks.rows[0].Raw.String, `"interval":"3m"`)
 }
 
+func TestRecordPriceSeriesPersistsBatchWithSqlConn(t *testing.T) {
+	conn := &recordingSqlConn{}
+	svc := &Service{sqlConn: conn}
+	ts := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	err := svc.RecordPriceSeries(context.Background(), " hyperliquid ", " btc ", []market.PriceTick{
+		{
+			Timestamp: ts,
+			Price:     50000,
+			Interval:  "3m",
+			Open:      49900,
+			High:      50100,
+			Low:       49800,
+			Close:     50000,
+			Volume:    123,
+			HasVolume: true,
+		},
+		{
+			Timestamp: ts.Add(3 * time.Minute),
+			Price:     50100,
+			Interval:  "3m",
+			Open:      50000,
+			High:      50200,
+			Low:       49950,
+			Close:     50100,
+		},
+		{Timestamp: time.Time{}, Price: 49900},
+		{Timestamp: ts.Add(time.Minute), Price: 0},
+	})
+
+	require.NoError(t, err)
+	execs := conn.snapshot()
+	require.Len(t, execs, 1)
+	require.False(t, execs[0].inTx)
+	require.Contains(t, strings.ToLower(execs[0].query), "insert into public.price_ticks")
+	require.Contains(t, strings.ToLower(execs[0].query), "on conflict do nothing")
+	require.Len(t, execs[0].args, 12)
+	require.Equal(t, "hyperliquid", execs[0].args[0])
+	require.Equal(t, "BTC", execs[0].args[1])
+	require.Equal(t, 50000.0, execs[0].args[2])
+	require.Equal(t, ts.UnixMilli(), execs[0].args[3])
+	require.Equal(t, sql.NullFloat64{Float64: 123, Valid: true}, execs[0].args[4])
+	require.Equal(t, "hyperliquid", execs[0].args[6])
+	require.Equal(t, "BTC", execs[0].args[7])
+	require.Equal(t, 50100.0, execs[0].args[8])
+	require.Equal(t, ts.Add(3*time.Minute).UnixMilli(), execs[0].args[9])
+}
+
 func TestHydrateCachesRestoresLatestPriceAndMarketContext(t *testing.T) {
 	ts := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	conn := &recordingSqlConn{}

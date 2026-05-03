@@ -14,6 +14,7 @@ import (
 	"github.com/zeromicro/go-zero/core/stores/sqlx"
 
 	cachekeys "nof0-api/internal/cache"
+	persistmetrics "nof0-api/internal/persistence/metrics"
 	marketpkg "nof0-api/pkg/market"
 )
 
@@ -22,6 +23,7 @@ const (
 	defaultMarketTolerancePct    = 0.001
 	defaultMarketExchangeTimeout = 5 * time.Second
 	defaultMarketCheckInterval   = 2 * time.Minute
+	marketConsistencyCacheReadOp = "market.consistency.cache_read"
 )
 
 // MarketCheckerConfig wires a read-only market data consistency checker.
@@ -192,6 +194,9 @@ func (c *MarketChecker) Check(ctx context.Context) (*MarketReport, error) {
 			c.checkExchange(ctx, report, row)
 		}
 	}
+	for _, issue := range report.Issues {
+		persistmetrics.RecordInconsistency(issue.Scope, issue.Provider, issue.Symbol, 1)
+	}
 	return report, nil
 }
 
@@ -272,6 +277,7 @@ func (c *MarketChecker) checkCache(ctx context.Context, report *MarketReport, ro
 	var payload latestCachePayload
 	if err := c.cache.GetCtx(ctx, key, &payload); err != nil {
 		if c.cache.IsNotFound(err) {
+			persistmetrics.RecordCacheOp(marketConsistencyCacheReadOp, persistmetrics.StatusMiss, 1)
 			report.Summary.CacheMissing++
 			report.Issues = append(report.Issues, MarketIssue{
 				Severity: "warn",
@@ -284,6 +290,7 @@ func (c *MarketChecker) checkCache(ctx context.Context, report *MarketReport, ro
 			})
 			return
 		}
+		persistmetrics.RecordCacheOp(marketConsistencyCacheReadOp, persistmetrics.StatusError, 1)
 		report.Summary.CacheMissing++
 		report.Issues = append(report.Issues, MarketIssue{
 			Severity: "warn",
@@ -296,6 +303,7 @@ func (c *MarketChecker) checkCache(ctx context.Context, report *MarketReport, ro
 		})
 		return
 	}
+	persistmetrics.RecordCacheOp(marketConsistencyCacheReadOp, persistmetrics.StatusHit, 1)
 	cacheTs := payload.Ts
 	if cacheTs == 0 {
 		cacheTs = payload.TimestampMs

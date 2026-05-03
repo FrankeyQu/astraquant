@@ -41,8 +41,10 @@
    - Cache write failures are classified by `internal/persistence/resilience`: transient cache/transport failures are queued for async retry, cache misses are ignored, and non-transient failures emit structured error logs.
    - Market and engine cache write paths now use the shared retry queue for price/context/assets, positions, trades, analytics, decisions, conversations, and leaderboard caches.
    - Operational remediation: inspect `cache retry queued`, `persistence retry failed`, and `cache write failed` logs; persistent final failures should be treated as alertable infrastructure issues.
-10. **Performance & monitoring additions.**
-    - Introduce batching (COPY/`INSERT ... VALUES` for ticks, Redis pipelining) once correctness is proven.
-    - Emit metrics: `db_writes_total`, `persistence_latency_seconds`, cache hit ratios, inconsistency counters.
+10. [x] **Performance & monitoring additions.**
+    - `price_ticks` now uses batch `INSERT ... VALUES ... ON CONFLICT DO NOTHING` when a SQL connection is available, with the generated model insert path kept as a fallback.
+    - Market asset cache writes now use Redis pipelining for hash update + expiry.
+    - Persistence and cache paths emit `expvar` metrics: `db_writes_total`, `persistence_latency_seconds`, `cache_ops_total` for write/hit/miss/error counters, and `inconsistency_counters_total`.
+    - Cache hit ratios can be derived from `cache_ops_total` hit/miss counters for consistency checker cache reads.
 
 > Tracking convention: mark each item as `[ ]` / `[x]` once implemented in code and keep links to the relevant PRs for auditability.

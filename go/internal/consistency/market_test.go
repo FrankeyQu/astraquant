@@ -13,10 +13,12 @@ import (
 	"github.com/zeromicro/go-zero/core/stores/sqlx"
 
 	cachekeys "nof0-api/internal/cache"
+	persistmetrics "nof0-api/internal/persistence/metrics"
 	marketpkg "nof0-api/pkg/market"
 )
 
 func TestMarketCheckerReportsCacheAndExchangeDifferences(t *testing.T) {
+	before := persistmetrics.Snapshot()
 	ts := time.Now().UTC()
 	conn := &checkerSqlConn{}
 	conn.queryRowsFn = func(v any, query string, args ...any) error {
@@ -59,9 +61,14 @@ func TestMarketCheckerReportsCacheAndExchangeDifferences(t *testing.T) {
 	require.Equal(t, 1, report.Summary.ExchangeChecked)
 	require.Equal(t, 1, report.Summary.ExchangeMismatch)
 	require.Len(t, report.Issues, 3)
+
+	after := persistmetrics.Snapshot()
+	require.Equal(t, before["cache_ops_total"]["market.consistency.cache_read|hit"]+1, after["cache_ops_total"]["market.consistency.cache_read|hit"])
+	require.Equal(t, before["inconsistency_counters_total"]["cache|hyperliquid|btc"]+1, after["inconsistency_counters_total"]["cache|hyperliquid|btc"])
 }
 
 func TestMarketCheckerReportsMissingCache(t *testing.T) {
+	before := persistmetrics.Snapshot()
 	ts := time.Now().UTC()
 	conn := &checkerSqlConn{}
 	conn.queryRowsFn = func(v any, _ string, _ ...any) error {
@@ -83,6 +90,9 @@ func TestMarketCheckerReportsMissingCache(t *testing.T) {
 	require.Equal(t, 1, report.Summary.CacheMissing)
 	require.Len(t, report.Issues, 1)
 	require.Equal(t, "cache", report.Issues[0].Scope)
+
+	after := persistmetrics.Snapshot()
+	require.Equal(t, before["cache_ops_total"]["market.consistency.cache_read|miss"]+1, after["cache_ops_total"]["market.consistency.cache_read|miss"])
 }
 
 type checkerSqlConn struct {

@@ -20,6 +20,7 @@ import (
 
 	cachekeys "nof0-api/internal/cache"
 	"nof0-api/internal/model"
+	persistmetrics "nof0-api/internal/persistence/metrics"
 	persistresilience "nof0-api/internal/persistence/resilience"
 	"nof0-api/pkg/market"
 )
@@ -35,6 +36,10 @@ const (
 	marketCachePriceOp        = "market.cache.price_latest"
 	marketCacheContextOp      = "market.cache.context"
 	marketCacheCryptoPricesOp = "market.cache.crypto_prices"
+
+	marketDBAssetsOp      = "market.db.assets"
+	marketDBSnapshotOp    = "market.db.snapshot"
+	marketDBPriceSeriesOp = "market.db.price_ticks"
 )
 
 // Service implements market data persistence and caching hooks.
@@ -160,10 +165,12 @@ ON CONFLICT (provider, symbol) DO UPDATE SET
 	defer sqlCancel()
 	queryStart := time.Now()
 	if _, err := s.sqlConn.ExecCtx(sqlCtx, stmt, args...); err != nil {
+		persistmetrics.RecordDBWrite(marketDBAssetsOp, persistmetrics.StatusError, len(validAssets), time.Since(queryStart))
 		logx.WithContext(sqlCtx).Errorf("marketpersist: batch upsert failed provider=%s count=%d err=%v", provider, len(validAssets), err)
 		return err
 	}
 	sqlDuration := time.Since(queryStart)
+	persistmetrics.RecordDBWrite(marketDBAssetsOp, persistmetrics.StatusOK, len(validAssets), sqlDuration)
 
 	cacheCtx, cacheCancel := context.WithTimeout(context.Background(), assetCacheTimeout)
 	defer cacheCancel()
@@ -201,15 +208,18 @@ func (s *Service) RecordSnapshot(ctx context.Context, provider string, snapshot 
 	}
 	txCtx, txCancel := context.WithTimeout(ctx, snapshotSQLTimeout)
 	defer txCancel()
+	txStart := time.Now()
 	if err := s.sqlConn.TransactCtx(txCtx, func(txCtx context.Context, session sqlx.Session) error {
 		if err := upsertPriceLatest(txCtx, session, provider, symbol, price, now); err != nil {
 			return err
 		}
 		return upsertMarketAssetCtx(txCtx, session, provider, symbol, ctxJSON)
 	}); err != nil {
+		persistmetrics.RecordDBWrite(marketDBSnapshotOp, persistmetrics.StatusError, 2, time.Since(txStart))
 		logx.WithContext(txCtx).Errorf("marketpersist: persist snapshot failed provider=%s symbol=%s err=%v", provider, symbol, err)
 		return err
 	}
+	persistmetrics.RecordDBWrite(marketDBSnapshotOp, persistmetrics.StatusOK, 2, time.Since(txStart))
 	s.cachePrice(ctx, provider, symbol, price, now)
 	s.cacheMarketCtx(ctx, provider, symbol, snapshot, now)
 	s.updateCryptoPrices(ctx, provider, symbol, price)
@@ -218,7 +228,7 @@ func (s *Service) RecordSnapshot(ctx context.Context, provider string, snapshot 
 
 // RecordPriceSeries persists historical ticks (typically OHLCV candles).
 func (s *Service) RecordPriceSeries(ctx context.Context, provider string, symbol string, ticks []market.PriceTick) error {
-	if s == nil || s.priceTicksModel == nil {
+	if s == nil || (s.sqlConn == nil && s.priceTicksModel == nil) {
 		return nil
 	}
 	if ctx == nil {
@@ -229,6 +239,7 @@ func (s *Service) RecordPriceSeries(ctx context.Context, provider string, symbol
 	if provider == "" || symbol == "" || len(ticks) == 0 {
 		return nil
 	}
+	rows := make([]*model.PriceTicks, 0, len(ticks))
 	for _, tick := range ticks {
 		if tick.Timestamp.IsZero() || !(tick.Price > 0) {
 			continue
@@ -245,14 +256,53 @@ func (s *Service) RecordPriceSeries(ctx context.Context, provider string, symbol
 		if raw := buildTickRaw(tick); raw.Valid {
 			row.Raw = raw
 		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		persistmetrics.RecordDBWrite(marketDBPriceSeriesOp, persistmetrics.StatusSkip, 0, 0)
+		return nil
+	}
+	start := time.Now()
+	if s.sqlConn != nil {
+		if err := s.insertPriceTicksBatch(ctx, rows); err != nil {
+			persistmetrics.RecordDBWrite(marketDBPriceSeriesOp, persistmetrics.StatusError, len(rows), time.Since(start))
+			return err
+		}
+		persistmetrics.RecordDBWrite(marketDBPriceSeriesOp, persistmetrics.StatusOK, len(rows), time.Since(start))
+		return nil
+	}
+	for _, row := range rows {
 		if _, err := s.priceTicksModel.Insert(ctx, row); err != nil {
 			if isUniqueViolation(err) {
 				continue
 			}
+			persistmetrics.RecordDBWrite(marketDBPriceSeriesOp, persistmetrics.StatusError, len(rows), time.Since(start))
 			return err
 		}
 	}
+	persistmetrics.RecordDBWrite(marketDBPriceSeriesOp, persistmetrics.StatusOK, len(rows), time.Since(start))
 	return nil
+}
+
+func (s *Service) insertPriceTicksBatch(ctx context.Context, rows []*model.PriceTicks) error {
+	if s == nil || s.sqlConn == nil || len(rows) == 0 {
+		return nil
+	}
+	valueClauses := make([]string, 0, len(rows))
+	args := make([]any, 0, len(rows)*6)
+	argIndex := 1
+	for _, row := range rows {
+		valueClauses = append(valueClauses, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d::jsonb)", argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5))
+		args = append(args, row.Provider, row.Symbol, row.Price, row.TsMs, row.Volume, row.Raw)
+		argIndex += 6
+	}
+	stmt := fmt.Sprintf(`
+INSERT INTO public.price_ticks (
+    provider, symbol, price, ts_ms, volume, raw
+) VALUES %s
+ON CONFLICT DO NOTHING`, strings.Join(valueClauses, ", "))
+	_, err := s.sqlConn.ExecCtx(ctx, stmt, args...)
+	return err
 }
 
 // HydrateCaches reloads market cache keys from Postgres after process startup.
@@ -445,10 +495,11 @@ func (s *Service) cacheAssets(ctx context.Context, provider string, assets []mar
 		if s.redis == nil {
 			return nil
 		}
-		if err := s.redis.HmsetCtx(writeCtx, key, fields); err != nil {
-			return err
-		}
-		return s.redis.ExpireCtx(writeCtx, key, int(ttl.Seconds()))
+		return s.redis.PipelinedCtx(writeCtx, func(pipe redis.Pipeliner) error {
+			pipe.HMSet(writeCtx, key, fields)
+			pipe.Expire(writeCtx, key, ttl)
+			return nil
+		})
 	}
 	if err := write(ctx); err != nil {
 		s.handleCacheFailure(ctx, marketCacheAssetsOp, key, map[string]any{
@@ -456,6 +507,8 @@ func (s *Service) cacheAssets(ctx context.Context, provider string, assets []mar
 			"count":     len(fields),
 			"cache_key": key,
 		}, err, write)
+	} else {
+		persistmetrics.RecordCacheOp(marketCacheAssetsOp, persistmetrics.StatusOK, len(fields))
 	}
 }
 
@@ -483,6 +536,8 @@ func (s *Service) cachePrice(ctx context.Context, provider, symbol string, price
 			"cache_key": key,
 			"scope":     "provider",
 		}, err, writeProvider)
+	} else {
+		persistmetrics.RecordCacheOp(marketCachePriceOp, persistmetrics.StatusOK, 1)
 	}
 	// Global key
 	global := cachekeys.PriceLatestKey(symbol)
@@ -496,6 +551,8 @@ func (s *Service) cachePrice(ctx context.Context, provider, symbol string, price
 			"cache_key": global,
 			"scope":     "global",
 		}, err, writeGlobal)
+	} else {
+		persistmetrics.RecordCacheOp(marketCachePriceOp, persistmetrics.StatusOK, 1)
 	}
 }
 
@@ -525,6 +582,8 @@ func (s *Service) cacheMarketCtx(ctx context.Context, provider, symbol string, s
 			"symbol":    symbol,
 			"cache_key": key,
 		}, err, write)
+	} else {
+		persistmetrics.RecordCacheOp(marketCacheContextOp, persistmetrics.StatusOK, 1)
 	}
 }
 
@@ -556,6 +615,8 @@ func (s *Service) updateCryptoPrices(ctx context.Context, provider, symbol strin
 			"cache_key": key,
 			"field":     field,
 		}, err, write)
+	} else {
+		persistmetrics.RecordCacheOp(marketCacheCryptoPricesOp, persistmetrics.StatusOK, 1)
 	}
 }
 
@@ -577,6 +638,8 @@ func (s *Service) cacheCryptoPrices(ctx context.Context, payload map[string]floa
 			"count":     len(payload),
 			"source":    "hydrate",
 		}, err, write)
+	} else {
+		persistmetrics.RecordCacheOp(marketCacheCryptoPricesOp, persistmetrics.StatusOK, len(payload))
 	}
 }
 
@@ -588,6 +651,7 @@ func (s *Service) handleCacheFailure(ctx context.Context, operation, resource st
 	if classification.Class == persistresilience.FailureClassIgnore {
 		return
 	}
+	persistmetrics.RecordCacheOp(operation, persistmetrics.StatusError, 1)
 	if fields == nil {
 		fields = map[string]any{}
 	}
