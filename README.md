@@ -56,8 +56,8 @@ npm run dev
   otherwise.
 - Do not commit `.env`, wallet private keys, API tokens, database dumps, or local
   dependency directories.
-- CI runs a lightweight secret scan before core tests. It is intentionally
-  conservative and allows `go/.env.example` placeholders.
+- CI runs a lightweight secret scan before core tests and Web lint/build. It is
+  intentionally conservative and allows `go/.env.example` placeholders.
 - Live trading must remain explicitly gated by code and configuration; README
   examples should never require live credentials.
 
@@ -70,6 +70,11 @@ cd go
 make test
 make -n build test docker-up docker-down docker-ps
 docker compose -f docker-compose.yml config
+
+cd ../web
+npm ci
+npm run lint
+npm run build
 ```
 
 ## Upstream Heritage
