@@ -56,4 +56,11 @@
     - `scripts/check_observability.sh` provides a deployment smoke probe for `/healthz`, `/readyz`, and required expvar maps.
     - `docs/observability.md` now includes the production alert catalog and operational rule that DB write failures or sustained market inconsistencies should block live automated trading.
 
+## P4 – trading hard safety (Week 4+)
+
+13. [x] **Pre-submit hard risk controls.**
+    - AI decisions are approved as intent first, then re-checked after account sync immediately before order submission.
+    - New opens support hard `allowed_symbols`, `max_daily_loss_usd`, and `max_daily_loss_pct` guards in addition to existing position size, leverage, margin, confidence, ownership, and position-count checks.
+    - `docs/risk-controls.md` documents the current hard guard contract and live-trading acknowledgement requirements.
+
 > Tracking convention: mark each item as `[ ]` / `[x]` once implemented in code and keep links to the relevant PRs for auditability.

@@ -105,15 +105,18 @@ type ExecGuards struct {
 }
 
 type RiskParameters struct {
-	MaxPositions       int     `yaml:"max_positions" json:"max_positions"`
-	MaxPositionSizeUSD float64 `yaml:"max_position_size_usd" json:"max_position_size_usd"`
-	MaxMarginUsagePct  float64 `yaml:"max_margin_usage_pct" json:"max_margin_usage_pct"`
-	MajorCoinLeverage  int     `yaml:"major_coin_leverage" json:"major_coin_leverage"`
-	AltcoinLeverage    int     `yaml:"altcoin_leverage" json:"altcoin_leverage"`
-	MinRiskRewardRatio float64 `yaml:"min_risk_reward_ratio" json:"min_risk_reward_ratio"`
-	MinConfidence      int     `yaml:"min_confidence" json:"min_confidence"`
-	StopLossEnabled    bool    `yaml:"stop_loss_enabled" json:"stop_loss_enabled"`
-	TakeProfitEnabled  bool    `yaml:"take_profit_enabled" json:"take_profit_enabled"`
+	MaxPositions       int      `yaml:"max_positions" json:"max_positions"`
+	MaxPositionSizeUSD float64  `yaml:"max_position_size_usd" json:"max_position_size_usd"`
+	MaxMarginUsagePct  float64  `yaml:"max_margin_usage_pct" json:"max_margin_usage_pct"`
+	MaxDailyLossUSD    float64  `yaml:"max_daily_loss_usd" json:"max_daily_loss_usd"`
+	MaxDailyLossPct    float64  `yaml:"max_daily_loss_pct" json:"max_daily_loss_pct"`
+	MajorCoinLeverage  int      `yaml:"major_coin_leverage" json:"major_coin_leverage"`
+	AltcoinLeverage    int      `yaml:"altcoin_leverage" json:"altcoin_leverage"`
+	MinRiskRewardRatio float64  `yaml:"min_risk_reward_ratio" json:"min_risk_reward_ratio"`
+	MinConfidence      int      `yaml:"min_confidence" json:"min_confidence"`
+	StopLossEnabled    bool     `yaml:"stop_loss_enabled" json:"stop_loss_enabled"`
+	TakeProfitEnabled  bool     `yaml:"take_profit_enabled" json:"take_profit_enabled"`
+	AllowedSymbols     []string `yaml:"allowed_symbols" json:"allowed_symbols"`
 }
 
 type MonitoringConfig struct {
@@ -243,6 +246,7 @@ func (c *Config) expandFields() {
 		c.Traders[i].ExecutionMode = normalizeExecutionMode(c.Traders[i].ExecutionMode, c.Traders[i].ExchangeProvider)
 		c.Traders[i].MarketProvider = strings.TrimSpace(c.Traders[i].MarketProvider)
 		c.Traders[i].OrderStyle = OrderStyle(strings.ToLower(strings.TrimSpace(string(c.Traders[i].OrderStyle))))
+		c.Traders[i].RiskParams.AllowedSymbols = normalizeSymbolList(c.Traders[i].RiskParams.AllowedSymbols)
 		c.Traders[i].PromptTemplate = c.resolvePath(c.Traders[i].PromptTemplate)
 		c.Traders[i].ExecutorTemplate = c.resolvePath(c.Traders[i].ExecutorTemplate)
 		c.Traders[i].JournalDir = c.resolvePath(c.Traders[i].JournalDir)
@@ -406,6 +410,12 @@ func (r RiskParameters) Validate(index int) error {
 	if r.MaxMarginUsagePct < 0 || r.MaxMarginUsagePct > 100 {
 		return fmt.Errorf("manager config: traders[%d].risk_params.max_margin_usage_pct must be between 0 and 100", index)
 	}
+	if r.MaxDailyLossUSD < 0 {
+		return fmt.Errorf("manager config: traders[%d].risk_params.max_daily_loss_usd cannot be negative", index)
+	}
+	if r.MaxDailyLossPct < 0 || r.MaxDailyLossPct > 100 {
+		return fmt.Errorf("manager config: traders[%d].risk_params.max_daily_loss_pct must be between 0 and 100", index)
+	}
 	if r.MajorCoinLeverage <= 0 {
 		return fmt.Errorf("manager config: traders[%d].risk_params.major_coin_leverage must be positive", index)
 	}
@@ -419,6 +429,27 @@ func (r RiskParameters) Validate(index int) error {
 		return fmt.Errorf("manager config: traders[%d].risk_params.min_confidence must be between 0 and 100", index)
 	}
 	return nil
+}
+
+func normalizeSymbolList(symbols []string) []string {
+	if len(symbols) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(symbols))
+	out := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		if symbol == "" {
+			continue
+		}
+		if _, ok := seen[symbol]; ok {
+			continue
+		}
+		seen[symbol] = struct{}{}
+		out = append(out, symbol)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func parsePositiveDuration(field, value string) (time.Duration, error) {

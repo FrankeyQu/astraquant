@@ -52,6 +52,9 @@ traders:
       max_positions: 3
       max_position_size_usd: 500
       max_margin_usage_pct: 60
+      max_daily_loss_usd: 250
+      max_daily_loss_pct: 5
+      allowed_symbols: [" eth ", "BTC", "ETH"]
       major_coin_leverage: 20
       altcoin_leverage: 10
       min_risk_reward_ratio: 3.0
@@ -98,6 +101,9 @@ monitoring:
 	assert.Equal(t, ExecutionModePaper, cfg.Traders[0].ExecutionMode, "ExecutionMode should default to paper for non-testnet providers")
 	assert.Equal(t, OrderStyleLimitIOC, cfg.Traders[0].OrderStyle, "OrderStyle should default to limit_ioc")
 	assert.Equal(t, defaultMarketIOCSlippageBps, cfg.Traders[0].MarketIOCSlippageBps, "MarketIOCSlippageBps should default")
+	assert.Equal(t, []string{"BTC", "ETH"}, cfg.Traders[0].RiskParams.AllowedSymbols, "AllowedSymbols should be normalized and deduplicated")
+	assert.Equal(t, 250.0, cfg.Traders[0].RiskParams.MaxDailyLossUSD, "MaxDailyLossUSD should load")
+	assert.Equal(t, 5.0, cfg.Traders[0].RiskParams.MaxDailyLossPct, "MaxDailyLossPct should load")
 
 	wantStatePath := filepath.Join(dir, "state/manager.json")
 	assert.Equal(t, wantStatePath, cfg.Manager.StateStoragePath, "StateStoragePath should match expected path")

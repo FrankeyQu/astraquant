@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -212,6 +213,62 @@ func TestPolicyGatewayRejectsPaperModeOnNonPaperProvider(t *testing.T) {
 	require.Zero(t, ex.placeOrders, "paper mode must not submit through a non-paper provider")
 }
 
+func TestPolicyGatewayRejectsSymbolOutsideWhitelist(t *testing.T) {
+	ex := &countingExchangeProvider{}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	trader.RiskParams.AllowedSymbols = []string{"BTC"}
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
+	}
+
+	err := m.ExecuteDecision(trader, &executorpkg.Decision{
+		Symbol:          "ETH",
+		Action:          "open_long",
+		PositionSizeUSD: 500,
+		EntryPrice:      3_000,
+		Leverage:        2,
+		Confidence:      90,
+	})
+
+	require.ErrorContains(t, err, "allowed_symbols")
+	require.Zero(t, ex.placeOrders, "symbol whitelist rejection must happen before exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestPreSubmitRiskRejectsDailyLossAfterAccountSync(t *testing.T) {
+	ex := &countingExchangeProvider{accountValue: 9_000}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	trader.RiskParams.MaxDailyLossUSD = 500
+	now := time.Now().UTC()
+	trader.DailyRisk = DailyRiskState{
+		Date:           now.Format("2006-01-02"),
+		StartEquityUSD: 10_000,
+		LastEquityUSD:  10_000,
+		UpdatedAt:      now,
+	}
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
+	}
+
+	err := m.ExecuteDecision(trader, &executorpkg.Decision{
+		Symbol:          "BTC",
+		Action:          "open_long",
+		PositionSizeUSD: 500,
+		EntryPrice:      50_000,
+		Leverage:        2,
+		Confidence:      90,
+	})
+
+	require.ErrorContains(t, err, "daily loss")
+	require.Zero(t, ex.placeOrders, "daily loss rejection must happen before exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventApproved)
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
 type validationErrorExecutor struct {
 	calls int
 }
@@ -239,7 +296,9 @@ func (e *validationErrorExecutor) GetConfig() *executorpkg.Config {
 }
 
 type countingExchangeProvider struct {
-	placeOrders int
+	placeOrders  int
+	accountValue float64
+	marginUsed   float64
 }
 
 func (p *countingExchangeProvider) PlaceOrder(context.Context, exchange.Order) (*exchange.OrderResponse, error) {
@@ -266,15 +325,22 @@ func (p *countingExchangeProvider) UpdateLeverage(context.Context, int, bool, in
 }
 
 func (p *countingExchangeProvider) GetAccountState(context.Context) (*exchange.AccountState, error) {
+	accountValue := p.accountValue
+	if accountValue <= 0 {
+		accountValue = 10000
+	}
 	return &exchange.AccountState{
 		MarginSummary: exchange.MarginSummary{
-			AccountValue:    "10000",
-			TotalMarginUsed: "0",
+			AccountValue:    fmt.Sprintf("%.2f", accountValue),
+			TotalMarginUsed: fmt.Sprintf("%.2f", p.marginUsed),
 		},
 	}, nil
 }
 
 func (p *countingExchangeProvider) GetAccountValue(context.Context) (float64, error) {
+	if p.accountValue > 0 {
+		return p.accountValue, nil
+	}
 	return 10000, nil
 }
 

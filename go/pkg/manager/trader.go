@@ -32,6 +32,14 @@ type ResourceAllocation struct {
 	UnrealizedPnLUSD    float64 // Unrealized PnL
 }
 
+// DailyRiskState tracks the UTC daily equity baseline used by hard loss limits.
+type DailyRiskState struct {
+	Date           string
+	StartEquityUSD float64
+	LastEquityUSD  float64
+	UpdatedAt      time.Time
+}
+
 // IsOverAllocated reports whether live usage exceeds the assigned slice.
 func (r ResourceAllocation) IsOverAllocated() bool {
 	if r.AllocatedEquityUSD <= 0 {
@@ -102,6 +110,7 @@ type VirtualTrader struct {
 	RiskParams           RiskParameters
 	ExecGuards           ExecGuards
 	ResourceAlloc        ResourceAllocation
+	DailyRisk            DailyRiskState
 	ConfigVersion        int64
 	State                TraderState
 	Performance          *PerformanceMetrics
