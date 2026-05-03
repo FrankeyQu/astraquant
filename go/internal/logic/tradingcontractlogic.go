@@ -914,12 +914,15 @@ func traderDetail(trader managerpkg.TraderConfig, status types.TraderStatus, dig
 			MaxPositions:       trader.RiskParams.MaxPositions,
 			MaxPositionSizeUsd: trader.RiskParams.MaxPositionSizeUSD,
 			MaxMarginUsagePct:  trader.RiskParams.MaxMarginUsagePct,
+			MaxDailyLossUsd:    trader.RiskParams.MaxDailyLossUSD,
+			MaxDailyLossPct:    trader.RiskParams.MaxDailyLossPct,
 			MajorCoinLeverage:  trader.RiskParams.MajorCoinLeverage,
 			AltcoinLeverage:    trader.RiskParams.AltcoinLeverage,
 			MinRiskRewardRatio: trader.RiskParams.MinRiskRewardRatio,
 			MinConfidence:      trader.RiskParams.MinConfidence,
 			StopLossEnabled:    trader.RiskParams.StopLossEnabled,
 			TakeProfitEnabled:  trader.RiskParams.TakeProfitEnabled,
+			AllowedSymbols:     trader.RiskParams.AllowedSymbols,
 		},
 		ExecGuards: types.TraderExecGuards{
 			MaxNewPositionsPerCycle: trader.ExecGuards.MaxNewPositionsPerCycle,
@@ -941,14 +944,15 @@ func traderStatusFromContext(ctx context.Context, svcCtx *svc.ServiceContext, tr
 	}
 	if svcCtx != nil && svcCtx.ManagerControl != nil {
 		if snapshot, ok := svcCtx.ManagerControl.Snapshot(trader.ID); ok {
-			return traderStatusFromControlSnapshot(trader, snapshot)
+			status = traderStatusFromControlSnapshot(trader, snapshot)
+			if runtimeSnapshot := runtimeStateSnapshot(ctx, svcCtx, trader.ID); runtimeSnapshot != nil {
+				applyRuntimeRiskState(&status, trader, runtimeSnapshot.Detail, time.Now().UTC())
+			}
+			return status
 		}
 	}
-	if svcCtx == nil || svcCtx.TraderRuntimeRepo == nil {
-		return status
-	}
-	snapshot, err := svcCtx.TraderRuntimeRepo.GetState(ctx, trader.ID)
-	if err != nil || snapshot == nil {
+	snapshot := runtimeStateSnapshot(ctx, svcCtx, trader.ID)
+	if snapshot == nil {
 		return status
 	}
 	status.IsRunning = snapshot.IsRunning
@@ -975,8 +979,11 @@ func traderStatusFromContext(ctx context.Context, svcCtx *svc.ServiceContext, tr
 			if snapshot.Detail.Pause.Until.After(time.Now()) {
 				status.Status = "paused"
 			}
+		} else if strings.TrimSpace(snapshot.Detail.Pause.Reason) != "" {
+			status.Status = "paused"
 		}
 	}
+	applyRuntimeRiskState(&status, trader, snapshot.Detail, time.Now().UTC())
 	return status
 }
 
@@ -1003,6 +1010,111 @@ func traderStatusFromControlSnapshot(trader managerpkg.TraderConfig, snapshot ma
 	}
 	status.PauseReason = snapshot.PauseReason
 	return status
+}
+
+func runtimeStateSnapshot(ctx context.Context, svcCtx *svc.ServiceContext, traderID string) *repo.RuntimeStateSnapshot {
+	if svcCtx == nil || svcCtx.TraderRuntimeRepo == nil {
+		return nil
+	}
+	snapshot, err := svcCtx.TraderRuntimeRepo.GetState(ctx, traderID)
+	if err != nil {
+		return nil
+	}
+	return snapshot
+}
+
+func applyRuntimeRiskState(status *types.TraderStatus, trader managerpkg.TraderConfig, detail repo.RuntimeStateDetail, now time.Time) {
+	if status == nil {
+		return
+	}
+	risk := traderRiskStateFromRuntime(trader, detail, now)
+	if risk == nil {
+		return
+	}
+	status.RiskState = risk
+	if risk.Blocked {
+		status.Status = "paused"
+		status.IsRunning = false
+		if status.PauseReason == "" {
+			status.PauseReason = risk.BlockReason
+		}
+	}
+}
+
+func traderRiskStateFromRuntime(trader managerpkg.TraderConfig, detail repo.RuntimeStateDetail, now time.Time) *types.TraderRiskState {
+	if detail.Risk == nil {
+		return nil
+	}
+	now = now.UTC()
+	out := &types.TraderRiskState{}
+	if daily := detail.Risk.Daily; daily != nil {
+		out.DailyDate = daily.Date
+		out.DailyStartEquityUsd = daily.StartEquityUSD
+		out.CurrentEquityUsd = daily.LastEquityUSD
+		if daily.UpdatedAt != nil {
+			out.UpdatedAt = formatRFC3339(*daily.UpdatedAt)
+		}
+		if daily.StartEquityUSD > 0 && daily.LastEquityUSD > 0 {
+			loss := daily.StartEquityUSD - daily.LastEquityUSD
+			if loss > 0 {
+				out.DailyLossUsd = loss
+				out.DailyLossPct = loss / daily.StartEquityUSD * 100
+			}
+			out.DailyLossLimitUsd = dailyLossLimitUSD(trader.RiskParams, daily.StartEquityUSD)
+			if out.DailyLossLimitUsd > 0 && out.DailyLossUsd > out.DailyLossLimitUsd+1e-6 && runtimeDailyRiskCurrent(daily, now) {
+				out.Blocked = true
+				out.BlockReason = "daily_loss_limit_exceeded"
+			}
+		}
+	}
+	if circuit := detail.Risk.Circuit; circuit != nil {
+		if circuit.TriggeredAt != nil {
+			out.TriggeredAt = formatRFC3339(*circuit.TriggeredAt)
+		}
+		if circuit.Blocked {
+			out.Blocked = true
+			if strings.TrimSpace(circuit.Reason) != "" {
+				out.BlockReason = circuit.Reason
+			} else if out.BlockReason == "" {
+				out.BlockReason = "risk_circuit_breaker"
+			}
+		}
+	}
+	if out.DailyDate == "" && out.DailyStartEquityUsd <= 0 && out.CurrentEquityUsd <= 0 && out.TriggeredAt == "" && out.BlockReason == "" {
+		return nil
+	}
+	return out
+}
+
+func dailyLossLimitUSD(params managerpkg.RiskParameters, startEquityUSD float64) float64 {
+	if startEquityUSD <= 0 {
+		return 0
+	}
+	limit := 0.0
+	if params.MaxDailyLossUSD > 0 {
+		limit = params.MaxDailyLossUSD
+	}
+	if params.MaxDailyLossPct > 0 {
+		pctLimit := startEquityUSD * (params.MaxDailyLossPct / 100.0)
+		if pctLimit > 0 && (limit == 0 || pctLimit < limit) {
+			limit = pctLimit
+		}
+	}
+	return limit
+}
+
+func runtimeDailyRiskCurrent(daily *repo.RuntimeDailyRiskDetail, now time.Time) bool {
+	if daily == nil {
+		return false
+	}
+	date := strings.TrimSpace(daily.Date)
+	if date != "" {
+		return date == now.UTC().Format("2006-01-02")
+	}
+	if daily.UpdatedAt == nil {
+		return false
+	}
+	return daily.UpdatedAt.UTC().Format("2006-01-02") == now.UTC().Format("2006-01-02")
 }
 
 func promptDigest(svcCtx *svc.ServiceContext, traderID string) string {

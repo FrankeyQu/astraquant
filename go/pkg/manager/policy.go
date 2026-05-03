@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -30,6 +31,23 @@ type ApprovalToken struct {
 	ApprovedAt  time.Time
 	ExpiresAt   time.Time
 	Checks      []string
+}
+
+// DailyLossLimitError is returned when the UTC daily equity drawdown exceeds
+// the configured hard limit for new opens.
+type DailyLossLimitError struct {
+	Date             string
+	StartEquityUSD   float64
+	CurrentEquityUSD float64
+	LossUSD          float64
+	LimitUSD         float64
+}
+
+func (e *DailyLossLimitError) Error() string {
+	if e == nil {
+		return "daily loss limit exceeded"
+	}
+	return fmt.Sprintf("daily loss %.2f exceeds limit %.2f", e.LossUSD, e.LimitUSD)
 }
 
 // ApproveDecision applies hard execution policy and returns a short-lived token.
@@ -193,6 +211,10 @@ func (m *Manager) enforceOpenRisk(trader *VirtualTrader, decision *executorpkg.D
 		return err
 	}
 	if err := enforceDailyLossLimit(trader, time.Now().UTC()); err != nil {
+		var dailyErr *DailyLossLimitError
+		if errors.As(err, &dailyErr) {
+			m.tripRiskCircuitBreaker(context.Background(), trader, dailyErr.Error())
+		}
 		return err
 	}
 	return m.enforceSecondaryRisk(trader, decision, leverage)
@@ -246,7 +268,17 @@ func enforceDailyLossLimit(trader *VirtualTrader, now time.Time) error {
 		return nil
 	}
 	if loss > limit+1e-6 {
-		return fmt.Errorf("daily loss %.2f exceeds limit %.2f", loss, limit)
+		date := state.Date
+		if date == "" {
+			date = now.UTC().Format("2006-01-02")
+		}
+		return &DailyLossLimitError{
+			Date:             date,
+			StartEquityUSD:   start,
+			CurrentEquityUSD: current,
+			LossUSD:          loss,
+			LimitUSD:         limit,
+		}
 	}
 	return nil
 }

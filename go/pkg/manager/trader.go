@@ -40,6 +40,15 @@ type DailyRiskState struct {
 	UpdatedAt      time.Time
 }
 
+// RiskCircuitState records a hard trading circuit breaker that requires an
+// operator start/resume before the trader can run again.
+type RiskCircuitState struct {
+	Blocked     bool
+	Date        string
+	Reason      string
+	TriggeredAt time.Time
+}
+
 // IsOverAllocated reports whether live usage exceeds the assigned slice.
 func (r ResourceAllocation) IsOverAllocated() bool {
 	if r.AllocatedEquityUSD <= 0 {
@@ -111,6 +120,7 @@ type VirtualTrader struct {
 	ExecGuards           ExecGuards
 	ResourceAlloc        ResourceAllocation
 	DailyRisk            DailyRiskState
+	RiskCircuit          RiskCircuitState
 	ConfigVersion        int64
 	State                TraderState
 	Performance          *PerformanceMetrics
@@ -137,6 +147,7 @@ func (t *VirtualTrader) Start() error {
 		return nil
 	}
 	t.State = TraderStateRunning
+	t.RiskCircuit = RiskCircuitState{}
 	t.UpdatedAt = time.Now()
 	logx.Infof("trader %s started", t.ID)
 	return nil
@@ -155,8 +166,20 @@ func (t *VirtualTrader) Pause() error {
 	return nil
 }
 
-// Resume sets the state back to running.
-func (t *VirtualTrader) Resume() error { return t.Start() }
+// Resume sets the state back to running and clears operator-resettable pauses.
+func (t *VirtualTrader) Resume() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.State == TraderStateRunning {
+		return nil
+	}
+	t.State = TraderStateRunning
+	t.PauseUntil = time.Time{}
+	t.RiskCircuit = RiskCircuitState{}
+	t.UpdatedAt = time.Now()
+	logx.Infof("trader %s resumed", t.ID)
+	return nil
+}
 
 // Stop transitions the trader into stopped state.
 func (t *VirtualTrader) Stop() error {
