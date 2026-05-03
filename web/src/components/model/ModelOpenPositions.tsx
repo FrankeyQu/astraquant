@@ -5,6 +5,7 @@ import { usePositions } from "@/lib/api/hooks/usePositions";
 import { fmtUSD, pnlClass } from "@/lib/utils/formatters";
 import { getModelName } from "@/lib/model/meta";
 import CoinIcon from "@/components/shared/CoinIcon";
+import type { ExitPlan, RawPositionRow } from "@/lib/api/hooks/usePositions";
 
 function fmtTime(sec?: number) {
   if (!sec) return "—";
@@ -26,10 +27,13 @@ function fmtNumber(n?: number | null, digits = 2) {
 export default function ModelOpenPositions({ modelId }: { modelId: string }) {
   const { positionsByModel } = usePositions();
   const model = positionsByModel.find((m) => m.id === modelId);
-  const positionsRaw = Object.values(model?.positions || {});
+  const positionsRaw = Object.values(model?.positions || {}) as RawPositionRow[];
+  type PositionWithSide = RawPositionRow & {
+    side: "LONG" | "SHORT";
+  };
   const positions = useMemo(
     () =>
-      positionsRaw.map((p: any) => ({
+      positionsRaw.map((p): PositionWithSide => ({
         ...p,
         side: p.quantity > 0 ? ("LONG" as const) : ("SHORT" as const),
       })),
@@ -38,7 +42,7 @@ export default function ModelOpenPositions({ modelId }: { modelId: string }) {
 
   // 顶部小计
   const totalUnreal = positions.reduce(
-    (acc, p: any) => acc + (p.unrealized_pnl || 0),
+    (acc, p) => acc + (p.unrealized_pnl || 0),
     0,
   );
 
@@ -103,7 +107,7 @@ export default function ModelOpenPositions({ modelId }: { modelId: string }) {
             </tr>
           </thead>
           <tbody style={{ color: "var(--foreground)" }}>
-            {positions.map((p: any, i: number) => {
+            {positions.map((p, i: number) => {
               const isLong = p.quantity > 0;
               const notional = Math.abs(p.quantity) * (p.current_price ?? 0);
               return (
@@ -165,12 +169,12 @@ export default function ModelOpenPositions({ modelId }: { modelId: string }) {
   );
 }
 
-function renderExitPlan(plan?: any) {
+function renderExitPlan(plan?: ExitPlan) {
   if (
     !plan ||
     !(plan.profit_target || plan.stop_loss || plan.invalidation_condition)
   )
-    return (<span style={{ color: "var(--muted-text)" }}>—</span>) as any;
+    return <span style={{ color: "var(--muted-text)" }}>—</span>;
   return (
     <span
       className="ui-sans text-[11px]"
@@ -178,5 +182,5 @@ function renderExitPlan(plan?: any) {
     >
       目标 {plan.profit_target ?? "—"}，止损 {plan.stop_loss ?? "—"}
     </span>
-  ) as any;
+  );
 }

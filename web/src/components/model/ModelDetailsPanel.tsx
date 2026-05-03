@@ -1,9 +1,12 @@
 "use client";
 import { useMemo } from "react";
 import { useSearchParams } from "next/navigation";
+import type { AccountTotalsRow } from "@/lib/api/hooks/useAccountTotals";
 import { useAccountTotals } from "@/lib/api/hooks/useAccountTotals";
 import { usePositions } from "@/lib/api/hooks/usePositions";
+import type { RawPositionRow } from "@/lib/api/hooks/usePositions";
 import { useTrades } from "@/lib/api/hooks/useTrades";
+import type { TradeRow } from "@/lib/api/hooks/useTrades";
 import { fmtUSD, pnlClass } from "@/lib/utils/formatters";
 import { getModelName } from "@/lib/model/meta";
 
@@ -22,12 +25,9 @@ export default function ModelDetailsPanel({
   const { trades } = useTrades();
 
   const latest = useMemo(() => {
-    const list: any[] =
-      totalsData && (totalsData as any).accountTotals
-        ? (totalsData as any).accountTotals
-        : [];
+    const list: AccountTotalsRow[] = totalsData?.accountTotals ?? [];
     // Find latest entry for modelId
-    let row: any | undefined;
+    let row: AccountTotalsRow | undefined;
     for (let i = list.length - 1; i >= 0; i--) {
       const r = list[i];
       if (r?.model_id === modelId || r?.id === modelId) {
@@ -41,7 +41,7 @@ export default function ModelDetailsPanel({
 
   const positions = useMemo(() => {
     const found = positionsByModel.find((m) => m.id === modelId);
-    return found ? Object.values(found.positions || {}) : [];
+    return found ? (Object.values(found.positions || {}) as RawPositionRow[]) : [];
   }, [positionsByModel, modelId]);
 
   const recentTrades = useMemo(
@@ -138,7 +138,7 @@ export default function ModelDetailsPanel({
             </thead>
             <tbody style={{ color: "var(--foreground)" }}>
               {positions.length ? (
-                positions.map((p: any, i: number) => {
+                positions.map((p: RawPositionRow, i: number) => {
                   const side = p.quantity > 0 ? "LONG" : "SHORT";
                   return (
                     <tr
@@ -210,7 +210,7 @@ export default function ModelDetailsPanel({
             </thead>
             <tbody style={{ color: "var(--foreground)" }}>
               {recentTrades.length ? (
-                recentTrades.map((t: any) => (
+                recentTrades.map((t: TradeRow) => (
                   <tr
                     key={t.id}
                     className={`border-b`}
