@@ -14,6 +14,7 @@ import (
 
 	cachekeys "nof0-api/internal/cache"
 	"nof0-api/internal/model"
+	persistresilience "nof0-api/internal/persistence/resilience"
 	"nof0-api/pkg/market"
 )
 
@@ -104,6 +105,30 @@ func TestRecordSnapshotPersistsLatestPriceAndMarketContext(t *testing.T) {
 	require.Contains(t, ctxJSON, `"provider":"hyperliquid"`)
 	require.Contains(t, ctxJSON, `"symbol":"BTC"`)
 	require.Contains(t, ctxJSON, `"price":50000`)
+}
+
+func TestRecordSnapshotQueuesCacheRetryOnTransientCacheFailure(t *testing.T) {
+	conn := &recordingSqlConn{}
+	cache := newRecordingCache()
+	cache.setErr = context.DeadlineExceeded
+	retries := &recordingRetryQueue{}
+	svc := &Service{
+		sqlConn:    conn,
+		cache:      cache,
+		ttl:        cachekeys.TTLSet{Short: time.Minute, Medium: time.Minute},
+		retryQueue: retries,
+	}
+
+	err := svc.RecordSnapshot(context.Background(), "hyperliquid", &market.Snapshot{
+		Symbol: "btc",
+		Price:  market.PriceInfo{Last: 50000},
+	})
+
+	require.NoError(t, err)
+	tasks := retries.snapshot()
+	require.NotEmpty(t, tasks)
+	require.Equal(t, marketCachePriceOp, tasks[0].Operation)
+	require.Contains(t, tasks[0].Fields, "failure_class")
 }
 
 func TestRecordPriceSeriesPersistsValidTicks(t *testing.T) {
@@ -396,6 +421,7 @@ type cacheWrite struct {
 type recordingCache struct {
 	mu     sync.Mutex
 	values map[string]cacheWrite
+	setErr error
 }
 
 func newRecordingCache() *recordingCache {
@@ -466,6 +492,9 @@ func (c *recordingCache) SetWithExpire(key string, val any, expire time.Duration
 }
 
 func (c *recordingCache) SetWithExpireCtx(_ context.Context, key string, val any, expire time.Duration) error {
+	if c.setErr != nil {
+		return c.setErr
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.values[key] = cacheWrite{value: val, ttl: expire}
@@ -489,3 +518,23 @@ func (c *recordingCache) TakeWithExpireCtx(context.Context, any, string, func(an
 }
 
 var errRecordingCacheNotFound = errors.New("recording cache not found")
+
+type recordingRetryQueue struct {
+	mu    sync.Mutex
+	tasks []persistresilience.Task
+}
+
+func (q *recordingRetryQueue) Enqueue(_ context.Context, task persistresilience.Task) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.tasks = append(q.tasks, task)
+	return true
+}
+
+func (q *recordingRetryQueue) snapshot() []persistresilience.Task {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]persistresilience.Task, len(q.tasks))
+	copy(out, q.tasks)
+	return out
+}

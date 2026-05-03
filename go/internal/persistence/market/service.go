@@ -20,6 +20,7 @@ import (
 
 	cachekeys "nof0-api/internal/cache"
 	"nof0-api/internal/model"
+	persistresilience "nof0-api/internal/persistence/resilience"
 	"nof0-api/pkg/market"
 )
 
@@ -29,6 +30,11 @@ const (
 	snapshotSQLTimeout = 30 * time.Second
 	hydrateSQLTimeout  = 30 * time.Second
 	cacheWorkerLimit   = 32
+
+	marketCacheAssetsOp       = "market.cache.assets"
+	marketCachePriceOp        = "market.cache.price_latest"
+	marketCacheContextOp      = "market.cache.context"
+	marketCacheCryptoPricesOp = "market.cache.crypto_prices"
 )
 
 // Service implements market data persistence and caching hooks.
@@ -39,6 +45,7 @@ type Service struct {
 	cache           gocache.Cache
 	redis           *redis.Redis
 	ttl             cachekeys.TTLSet
+	retryQueue      persistresilience.Enqueuer
 }
 
 // Config enumerates dependencies required to persist market data.
@@ -49,6 +56,7 @@ type Config struct {
 	Cache           gocache.Cache
 	Redis           *redis.Redis
 	TTL             cachekeys.TTLSet
+	RetryQueue      persistresilience.Enqueuer
 }
 
 // NewService wires a market persistence service. Returns nil when dependencies missing.
@@ -63,6 +71,7 @@ func NewService(cfg Config) market.Persistence {
 		cache:           cfg.Cache,
 		redis:           cfg.Redis,
 		ttl:             cfg.TTL,
+		retryQueue:      cfg.RetryQueue,
 	}
 }
 
@@ -159,12 +168,7 @@ ON CONFLICT (provider, symbol) DO UPDATE SET
 	cacheCtx, cacheCancel := context.WithTimeout(context.Background(), assetCacheTimeout)
 	defer cacheCancel()
 	cacheStart := time.Now()
-	if err := s.cacheAssets(cacheCtx, provider, validAssets); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			logx.WithContext(cacheCtx).Errorf("marketpersist: cache assets timed out provider=%s count=%d err=%v", provider, len(validAssets), err)
-		}
-		return err
-	}
+	s.cacheAssets(cacheCtx, provider, validAssets)
 	cacheDuration := time.Since(cacheStart)
 
 	logx.WithContext(ctx).Infof("marketpersist: batch upserted assets provider=%s count=%d sql_duration=%dms cache_duration=%dms total_duration=%dms",
@@ -332,8 +336,16 @@ FROM public.market_asset_ctx`, `ORDER BY provider, symbol`, providers)
 			continue
 		}
 		key := cachekeys.MarketAssetCtxKey(provider, symbol)
-		if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-			logx.WithContext(ctx).Errorf("marketpersist: hydrate ctx cache key=%s err=%v", key, err)
+		write := func(writeCtx context.Context) error {
+			return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+		}
+		if err := write(ctx); err != nil {
+			s.handleCacheFailure(ctx, marketCacheContextOp, key, map[string]any{
+				"provider":  provider,
+				"symbol":    symbol,
+				"cache_key": key,
+				"source":    "hydrate",
+			}, err, write)
 		}
 	}
 	return nil
@@ -380,16 +392,14 @@ FROM public.market_assets`, `ORDER BY provider, symbol`, providers)
 		grouped[provider] = append(grouped[provider], asset)
 	}
 	for provider, assets := range grouped {
-		if err := s.cacheAssets(ctx, provider, assets); err != nil {
-			return err
-		}
+		s.cacheAssets(ctx, provider, assets)
 	}
 	return nil
 }
 
-func (s *Service) cacheAssets(ctx context.Context, provider string, assets []market.Asset) error {
+func (s *Service) cacheAssets(ctx context.Context, provider string, assets []market.Asset) {
 	if s.redis == nil || len(assets) == 0 {
-		return nil
+		return
 	}
 
 	key := cachekeys.MarketAssetKey(provider)
@@ -428,22 +438,25 @@ func (s *Service) cacheAssets(ctx context.Context, provider string, assets []mar
 	}
 
 	if len(fields) == 0 {
-		return nil
+		return
 	}
 
-	// Use HMSET to set all fields at once
-	if err := s.redis.HmsetCtx(ctx, key, fields); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: cache assets hash key=%s count=%d err=%v", key, len(fields), err)
-		return err
+	write := func(writeCtx context.Context) error {
+		if s.redis == nil {
+			return nil
+		}
+		if err := s.redis.HmsetCtx(writeCtx, key, fields); err != nil {
+			return err
+		}
+		return s.redis.ExpireCtx(writeCtx, key, int(ttl.Seconds()))
 	}
-
-	// Set TTL on the hash key
-	if err := s.redis.ExpireCtx(ctx, key, int(ttl.Seconds())); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: set ttl on assets hash key=%s err=%v", key, err)
-		return err
+	if err := write(ctx); err != nil {
+		s.handleCacheFailure(ctx, marketCacheAssetsOp, key, map[string]any{
+			"provider":  provider,
+			"count":     len(fields),
+			"cache_key": key,
+		}, err, write)
 	}
-
-	return nil
 }
 
 func (s *Service) cachePrice(ctx context.Context, provider, symbol string, price float64, ts time.Time) {
@@ -460,13 +473,29 @@ func (s *Service) cachePrice(ctx context.Context, provider, symbol string, price
 		"price": price,
 		"ts":    ts.UnixMilli(),
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: cache price key=%s err=%v", key, err)
+	writeProvider := func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+	}
+	if err := writeProvider(ctx); err != nil {
+		s.handleCacheFailure(ctx, marketCachePriceOp, key, map[string]any{
+			"provider":  provider,
+			"symbol":    symbol,
+			"cache_key": key,
+			"scope":     "provider",
+		}, err, writeProvider)
 	}
 	// Global key
 	global := cachekeys.PriceLatestKey(symbol)
-	if err := s.cache.SetWithExpireCtx(ctx, global, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: cache price key=%s err=%v", global, err)
+	writeGlobal := func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, global, payload, ttl)
+	}
+	if err := writeGlobal(ctx); err != nil {
+		s.handleCacheFailure(ctx, marketCachePriceOp, global, map[string]any{
+			"provider":  provider,
+			"symbol":    symbol,
+			"cache_key": global,
+			"scope":     "global",
+		}, err, writeGlobal)
 	}
 }
 
@@ -487,8 +516,15 @@ func (s *Service) cacheMarketCtx(ctx context.Context, provider, symbol string, s
 		"indicators":   snapshot.Indicators,
 		"timestamp_ms": recordedAt.UnixMilli(),
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, ctxPayload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: cache ctx key=%s err=%v", key, err)
+	write := func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, ctxPayload, ttl)
+	}
+	if err := write(ctx); err != nil {
+		s.handleCacheFailure(ctx, marketCacheContextOp, key, map[string]any{
+			"provider":  provider,
+			"symbol":    symbol,
+			"cache_key": key,
+		}, err, write)
 	}
 }
 
@@ -497,22 +533,29 @@ func (s *Service) updateCryptoPrices(ctx context.Context, provider, symbol strin
 		return
 	}
 	key := cachekeys.CryptoPricesKey()
-	var payload map[string]float64
-	if err := s.cache.GetCtx(ctx, key, &payload); err != nil && !s.cache.IsNotFound(err) {
-		logx.WithContext(ctx).Errorf("marketpersist: load crypto prices key=%s err=%v", key, err)
-		return
-	}
-	if payload == nil {
-		payload = make(map[string]float64)
-	}
 	field := fmt.Sprintf("%s:%s", provider, symbol)
-	payload[field] = price
 	ttl := cachekeys.CryptoPricesTTL(s.ttl)
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: cache crypto prices key=%s err=%v", key, err)
+	write := func(writeCtx context.Context) error {
+		var payload map[string]float64
+		if err := s.cache.GetCtx(writeCtx, key, &payload); err != nil && !s.cache.IsNotFound(err) {
+			return err
+		}
+		if payload == nil {
+			payload = make(map[string]float64)
+		}
+		payload[field] = price
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+	}
+	if err := write(ctx); err != nil {
+		s.handleCacheFailure(ctx, marketCacheCryptoPricesOp, key, map[string]any{
+			"provider":  provider,
+			"symbol":    symbol,
+			"cache_key": key,
+			"field":     field,
+		}, err, write)
 	}
 }
 
@@ -525,9 +568,50 @@ func (s *Service) cacheCryptoPrices(ctx context.Context, payload map[string]floa
 		return
 	}
 	key := cachekeys.CryptoPricesKey()
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("marketpersist: cache crypto prices key=%s err=%v", key, err)
+	write := func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
 	}
+	if err := write(ctx); err != nil {
+		s.handleCacheFailure(ctx, marketCacheCryptoPricesOp, key, map[string]any{
+			"cache_key": key,
+			"count":     len(payload),
+			"source":    "hydrate",
+		}, err, write)
+	}
+}
+
+func (s *Service) handleCacheFailure(ctx context.Context, operation, resource string, fields map[string]any, err error, retryFn func(context.Context) error) {
+	if err == nil {
+		return
+	}
+	classification := persistresilience.Classify(err)
+	if classification.Class == persistresilience.FailureClassIgnore {
+		return
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["failure_class"] = classification.Class
+	fields["failure_reason"] = classification.Reason
+
+	if persistresilience.IsRetryContext(ctx) {
+		logx.WithContext(ctx).Errorf("marketpersist: cache retry failed op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+		return
+	}
+	if classification.Class == persistresilience.FailureClassRetryAsync && s.retryQueue != nil && retryFn != nil {
+		if s.retryQueue.Enqueue(ctx, persistresilience.Task{
+			Operation: operation,
+			Resource:  resource,
+			Fields:    fields,
+			Do:        retryFn,
+		}) {
+			logx.WithContext(ctx).Slowf("marketpersist: cache retry queued op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+			return
+		}
+		logx.WithContext(ctx).Errorf("marketpersist: cache retry queue saturated op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+		return
+	}
+	logx.WithContext(ctx).Errorf("marketpersist: cache write failed op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
 }
 
 func buildTickRaw(tick market.PriceTick) sql.NullString {

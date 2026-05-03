@@ -21,6 +21,7 @@ import (
 	"nof0-api/internal/data"
 	"nof0-api/internal/model"
 	enginepersist "nof0-api/internal/persistence/engine"
+	persistresilience "nof0-api/internal/persistence/resilience"
 	"nof0-api/internal/secrets"
 	"nof0-api/pkg/confkit"
 	exchangepkg "nof0-api/pkg/exchange"
@@ -55,6 +56,7 @@ type ServiceContext struct {
 	ManagerTraderExchange  map[string]exchangepkg.Provider
 	ManagerTraderMarket    map[string]marketpkg.Provider
 	CommandQueue           *controlqueue.Queue
+	PersistenceRetryQueue  *persistresilience.Queue
 
 	// Optional DB models (injected but unused by handlers/logic for now)
 	DBConn                      sqlx.SqlConn
@@ -91,10 +93,11 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 	secretStore := secrets.NewEnvStore()
 
 	svc := &ServiceContext{
-		Config:       c,
-		DataLoader:   data.NewDataLoader(c.DataPath),
-		SecretStore:  secretStore,
-		CommandQueue: controlqueue.NewQueue(),
+		Config:                c,
+		DataLoader:            data.NewDataLoader(c.DataPath),
+		SecretStore:           secretStore,
+		CommandQueue:          controlqueue.NewQueue(),
+		PersistenceRetryQueue: persistresilience.NewQueue(persistresilience.QueueConfig{}),
 	}
 
 	cacheNodes := filterCacheNodes(c.Cache)
@@ -334,6 +337,7 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 			Cache:                     svc.Cache,
 			Redis:                     svc.Redis,
 			TTL:                       cachettl.NewTTLSet(c.TTL),
+			RetryQueue:                svc.PersistenceRetryQueue,
 			ConversationsModel:        svc.ConversationsModel,
 			ConversationMessagesModel: svc.ConversationMessagesModel,
 		})

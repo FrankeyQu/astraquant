@@ -21,6 +21,7 @@ import (
 
 	cachekeys "nof0-api/internal/cache"
 	"nof0-api/internal/model"
+	persistresilience "nof0-api/internal/persistence/resilience"
 	"nof0-api/pkg/exchange"
 	executorpkg "nof0-api/pkg/executor"
 	journal "nof0-api/pkg/journal"
@@ -44,6 +45,7 @@ type Service struct {
 	cache                     gocache.Cache
 	redis                     *redis.Redis
 	ttl                       cachekeys.TTLSet
+	retryQueue                persistresilience.Enqueuer
 	conversationsModel        model.ConversationsModel
 	conversationMessagesModel model.ConversationMessagesModel
 }
@@ -59,6 +61,7 @@ type Config struct {
 	Cache                     gocache.Cache
 	Redis                     *redis.Redis
 	TTL                       cachekeys.TTLSet
+	RetryQueue                persistresilience.Enqueuer
 	ConversationsModel        model.ConversationsModel
 	ConversationMessagesModel model.ConversationMessagesModel
 }
@@ -82,6 +85,7 @@ func NewService(cfg Config) managerpkg.PersistenceService {
 		cache:                     cfg.Cache,
 		redis:                     cfg.Redis,
 		ttl:                       cfg.TTL,
+		retryQueue:                cfg.RetryQueue,
 		conversationsModel:        cfg.ConversationsModel,
 		conversationMessagesModel: cfg.ConversationMessagesModel,
 	}
@@ -904,6 +908,15 @@ const (
 	recentTradesLimit       = 100
 	defaultCacheTTL         = time.Minute
 	conversationsCacheLimit = 20
+
+	engineCachePositionsOp      = "engine.cache.positions"
+	engineCacheTradesOp         = "engine.cache.trades"
+	engineCacheAnalyticsOp      = "engine.cache.analytics"
+	engineCacheSinceInceptionOp = "engine.cache.since_inception"
+	engineCacheDecisionOp       = "engine.cache.decision"
+	engineCacheConversationOp   = "engine.cache.conversation"
+	engineCacheLeaderboardOp    = "engine.cache.leaderboard"
+	engineCacheHashExpireOp     = "engine.cache.hash_expire"
 )
 
 type positionCacheEntry struct {
@@ -943,6 +956,49 @@ type decisionCacheEntry struct {
 	Action        string `json:"action,omitempty"`
 	Confidence    int    `json:"confidence,omitempty"`
 	Error         string `json:"error,omitempty"`
+}
+
+func (s *Service) handleCacheFailure(ctx context.Context, operation, resource string, fields map[string]any, err error, retryFn func(context.Context) error) {
+	if err == nil {
+		return
+	}
+	classification := persistresilience.Classify(err)
+	if classification.Class == persistresilience.FailureClassIgnore {
+		return
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["failure_class"] = classification.Class
+	fields["failure_reason"] = classification.Reason
+
+	if persistresilience.IsRetryContext(ctx) {
+		logx.WithContext(ctx).Errorf("enginepersist: cache retry failed op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+		return
+	}
+	if classification.Class == persistresilience.FailureClassRetryAsync && s.retryQueue != nil && retryFn != nil {
+		if s.retryQueue.Enqueue(ctx, persistresilience.Task{
+			Operation: operation,
+			Resource:  resource,
+			Fields:    fields,
+			Do:        retryFn,
+		}) {
+			logx.WithContext(ctx).Slowf("enginepersist: cache retry queued op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+			return
+		}
+		logx.WithContext(ctx).Errorf("enginepersist: cache retry queue saturated op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+		return
+	}
+	logx.WithContext(ctx).Errorf("enginepersist: cache write failed op=%s resource=%s fields=%v err=%v", operation, resource, fields, err)
+}
+
+func (s *Service) runCacheWrite(ctx context.Context, operation, resource string, fields map[string]any, write func(context.Context) error) {
+	if write == nil {
+		return
+	}
+	if err := write(ctx); err != nil {
+		s.handleCacheFailure(ctx, operation, resource, fields, err, write)
+	}
 }
 
 func (s *Service) cacheOpenPosition(ctx context.Context, modelID, symbol string, entry *positionCacheEntry) {
@@ -1026,18 +1082,27 @@ func (s *Service) cacheDecisionSummary(ctx context.Context, modelID string, reco
 		return
 	}
 	if s.redis != nil {
-		if err := s.hashSetJSON(ctx, key, field, ttl, entry); err != nil {
-			logx.WithContext(ctx).Errorf("enginepersist: set decision hash key=%s field=%s err=%v", key, field, err)
-		}
+		s.runCacheWrite(ctx, engineCacheDecisionOp, key, map[string]any{
+			"model_id":  modelID,
+			"field":     field,
+			"cache_key": key,
+			"scope":     "hash",
+		}, func(writeCtx context.Context) error {
+			return s.hashSetJSON(writeCtx, key, field, ttl, entry)
+		})
 		return
 	}
 	if s.cache == nil {
 		return
 	}
 	legacyKey := cachekeys.DecisionLastKey(modelID)
-	if err := s.cache.SetWithExpireCtx(ctx, legacyKey, entry, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set decision cache key=%s err=%v", legacyKey, err)
-	}
+	s.runCacheWrite(ctx, engineCacheDecisionOp, legacyKey, map[string]any{
+		"model_id":  modelID,
+		"cache_key": legacyKey,
+		"scope":     "legacy",
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, legacyKey, entry, ttl)
+	})
 }
 
 func (s *Service) loadPositionsCache(ctx context.Context, traderID string) (map[string]positionCacheEntry, error) {
@@ -1075,11 +1140,28 @@ func (s *Service) writePositionsCache(ctx context.Context, traderID string, payl
 		key := cachekeys.TraderPositionsHashKey()
 		field := cachekeys.TraderHashField(traderID)
 		if len(payload) == 0 || payload == nil {
-			if err := s.hashDelField(ctx, key, field); err != nil && err != redis.Nil {
-				logx.WithContext(ctx).Errorf("enginepersist: del positions hash key=%s field=%s err=%v", key, field, err)
-			}
-		} else if err := s.hashSetJSON(ctx, key, field, ttl, payload); err != nil {
-			logx.WithContext(ctx).Errorf("enginepersist: set positions hash key=%s field=%s err=%v", key, field, err)
+			s.runCacheWrite(ctx, engineCachePositionsOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"action":    "delete",
+			}, func(writeCtx context.Context) error {
+				err := s.hashDelField(writeCtx, key, field)
+				if err != nil && errors.Is(err, redis.Nil) {
+					return nil
+				}
+				return err
+			})
+		} else {
+			s.runCacheWrite(ctx, engineCachePositionsOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"count":     len(payload),
+				"action":    "set",
+			}, func(writeCtx context.Context) error {
+				return s.hashSetJSON(writeCtx, key, field, ttl, payload)
+			})
 		}
 		return
 	}
@@ -1088,17 +1170,30 @@ func (s *Service) writePositionsCache(ctx context.Context, traderID string, payl
 	}
 	key := cachekeys.PositionsHashKey(traderID)
 	if len(payload) == 0 || payload == nil {
-		if err := s.cache.DelCtx(ctx, key); err != nil && !s.cache.IsNotFound(err) {
-			logx.WithContext(ctx).Errorf("enginepersist: del positions cache key=%s err=%v", key, err)
-		}
+		s.runCacheWrite(ctx, engineCachePositionsOp, key, map[string]any{
+			"trader_id": traderID,
+			"cache_key": key,
+			"action":    "delete",
+		}, func(writeCtx context.Context) error {
+			err := s.cache.DelCtx(writeCtx, key)
+			if err != nil && s.cache.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
 		return
 	}
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set positions cache key=%s err=%v", key, err)
-	}
+	s.runCacheWrite(ctx, engineCachePositionsOp, key, map[string]any{
+		"trader_id": traderID,
+		"cache_key": key,
+		"count":     len(payload),
+		"action":    "set",
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+	})
 }
 
 func (s *Service) loadTradesCache(ctx context.Context, traderID string) ([]tradeCacheEntry, error) {
@@ -1133,11 +1228,28 @@ func (s *Service) writeTradesCache(ctx context.Context, traderID string, payload
 		key := cachekeys.TraderTradesRecentHashKey()
 		field := cachekeys.TraderHashField(traderID)
 		if len(payload) == 0 {
-			if err := s.hashDelField(ctx, key, field); err != nil && err != redis.Nil {
-				logx.WithContext(ctx).Errorf("enginepersist: del trades hash key=%s field=%s err=%v", key, field, err)
-			}
-		} else if err := s.hashSetJSON(ctx, key, field, ttl, payload); err != nil {
-			logx.WithContext(ctx).Errorf("enginepersist: set trades hash key=%s field=%s err=%v", key, field, err)
+			s.runCacheWrite(ctx, engineCacheTradesOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"action":    "delete",
+			}, func(writeCtx context.Context) error {
+				err := s.hashDelField(writeCtx, key, field)
+				if err != nil && errors.Is(err, redis.Nil) {
+					return nil
+				}
+				return err
+			})
+		} else {
+			s.runCacheWrite(ctx, engineCacheTradesOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"count":     len(payload),
+				"action":    "set",
+			}, func(writeCtx context.Context) error {
+				return s.hashSetJSON(writeCtx, key, field, ttl, payload)
+			})
 		}
 		return
 	}
@@ -1146,17 +1258,30 @@ func (s *Service) writeTradesCache(ctx context.Context, traderID string, payload
 	}
 	key := cachekeys.TradesRecentKey(traderID)
 	if len(payload) == 0 {
-		if err := s.cache.DelCtx(ctx, key); err != nil && !s.cache.IsNotFound(err) {
-			logx.WithContext(ctx).Errorf("enginepersist: del trades cache key=%s err=%v", key, err)
-		}
+		s.runCacheWrite(ctx, engineCacheTradesOp, key, map[string]any{
+			"trader_id": traderID,
+			"cache_key": key,
+			"action":    "delete",
+		}, func(writeCtx context.Context) error {
+			err := s.cache.DelCtx(writeCtx, key)
+			if err != nil && s.cache.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
 		return
 	}
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set trades cache key=%s err=%v", key, err)
-	}
+	s.runCacheWrite(ctx, engineCacheTradesOp, key, map[string]any{
+		"trader_id": traderID,
+		"cache_key": key,
+		"count":     len(payload),
+		"action":    "set",
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+	})
 }
 
 func (s *Service) writeAnalyticsCache(ctx context.Context, traderID string, payload map[string]any) {
@@ -1165,11 +1290,28 @@ func (s *Service) writeAnalyticsCache(ctx context.Context, traderID string, payl
 		key := cachekeys.TraderAnalyticsHashKey()
 		field := cachekeys.TraderHashField(traderID)
 		if len(payload) == 0 || payload == nil {
-			if err := s.hashDelField(ctx, key, field); err != nil && err != redis.Nil {
-				logx.WithContext(ctx).Errorf("enginepersist: del analytics hash key=%s field=%s err=%v", key, field, err)
-			}
-		} else if err := s.hashSetJSON(ctx, key, field, ttl, payload); err != nil {
-			logx.WithContext(ctx).Errorf("enginepersist: set analytics hash key=%s field=%s err=%v", key, field, err)
+			s.runCacheWrite(ctx, engineCacheAnalyticsOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"action":    "delete",
+			}, func(writeCtx context.Context) error {
+				err := s.hashDelField(writeCtx, key, field)
+				if err != nil && errors.Is(err, redis.Nil) {
+					return nil
+				}
+				return err
+			})
+		} else {
+			s.runCacheWrite(ctx, engineCacheAnalyticsOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"count":     len(payload),
+				"action":    "set",
+			}, func(writeCtx context.Context) error {
+				return s.hashSetJSON(writeCtx, key, field, ttl, payload)
+			})
 		}
 		return
 	}
@@ -1178,17 +1320,30 @@ func (s *Service) writeAnalyticsCache(ctx context.Context, traderID string, payl
 	}
 	key := cachekeys.AnalyticsKey(traderID)
 	if len(payload) == 0 || payload == nil {
-		if err := s.cache.DelCtx(ctx, key); err != nil && !s.cache.IsNotFound(err) {
-			logx.WithContext(ctx).Errorf("enginepersist: del analytics cache key=%s err=%v", key, err)
-		}
+		s.runCacheWrite(ctx, engineCacheAnalyticsOp, key, map[string]any{
+			"trader_id": traderID,
+			"cache_key": key,
+			"action":    "delete",
+		}, func(writeCtx context.Context) error {
+			err := s.cache.DelCtx(writeCtx, key)
+			if err != nil && s.cache.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
 		return
 	}
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set analytics cache key=%s err=%v", key, err)
-	}
+	s.runCacheWrite(ctx, engineCacheAnalyticsOp, key, map[string]any{
+		"trader_id": traderID,
+		"cache_key": key,
+		"count":     len(payload),
+		"action":    "set",
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+	})
 }
 
 func (s *Service) writeSinceInceptionCache(ctx context.Context, traderID string, payload map[string]any) {
@@ -1197,11 +1352,28 @@ func (s *Service) writeSinceInceptionCache(ctx context.Context, traderID string,
 		key := cachekeys.TraderSinceInceptionHashKey()
 		field := cachekeys.TraderHashField(traderID)
 		if len(payload) == 0 || payload == nil {
-			if err := s.hashDelField(ctx, key, field); err != nil && err != redis.Nil {
-				logx.WithContext(ctx).Errorf("enginepersist: del since inception hash key=%s field=%s err=%v", key, field, err)
-			}
-		} else if err := s.hashSetJSON(ctx, key, field, ttl, payload); err != nil {
-			logx.WithContext(ctx).Errorf("enginepersist: set since inception hash key=%s field=%s err=%v", key, field, err)
+			s.runCacheWrite(ctx, engineCacheSinceInceptionOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"action":    "delete",
+			}, func(writeCtx context.Context) error {
+				err := s.hashDelField(writeCtx, key, field)
+				if err != nil && errors.Is(err, redis.Nil) {
+					return nil
+				}
+				return err
+			})
+		} else {
+			s.runCacheWrite(ctx, engineCacheSinceInceptionOp, key, map[string]any{
+				"trader_id": traderID,
+				"field":     field,
+				"cache_key": key,
+				"count":     len(payload),
+				"action":    "set",
+			}, func(writeCtx context.Context) error {
+				return s.hashSetJSON(writeCtx, key, field, ttl, payload)
+			})
 		}
 		return
 	}
@@ -1210,17 +1382,30 @@ func (s *Service) writeSinceInceptionCache(ctx context.Context, traderID string,
 	}
 	key := cachekeys.SinceInceptionKey(traderID)
 	if len(payload) == 0 || payload == nil {
-		if err := s.cache.DelCtx(ctx, key); err != nil && !s.cache.IsNotFound(err) {
-			logx.WithContext(ctx).Errorf("enginepersist: del since inception cache key=%s err=%v", key, err)
-		}
+		s.runCacheWrite(ctx, engineCacheSinceInceptionOp, key, map[string]any{
+			"trader_id": traderID,
+			"cache_key": key,
+			"action":    "delete",
+		}, func(writeCtx context.Context) error {
+			err := s.cache.DelCtx(writeCtx, key)
+			if err != nil && s.cache.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
 		return
 	}
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, payload, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set since inception cache key=%s err=%v", key, err)
-	}
+	s.runCacheWrite(ctx, engineCacheSinceInceptionOp, key, map[string]any{
+		"trader_id": traderID,
+		"cache_key": key,
+		"count":     len(payload),
+		"action":    "set",
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, payload, ttl)
+	})
 }
 
 func (s *Service) hashSetJSON(ctx context.Context, key, field string, ttl time.Duration, payload any) error {
@@ -1270,8 +1455,15 @@ func (s *Service) hashExpire(ctx context.Context, key string, ttl time.Duration)
 	if s.redis == nil || ttl <= 0 {
 		return
 	}
-	if err := s.redis.ExpireCtx(ctx, key, durationToSeconds(ttl)); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: expire hash key=%s err=%v", key, err)
+	seconds := durationToSeconds(ttl)
+	write := func(writeCtx context.Context) error {
+		return s.redis.ExpireCtx(writeCtx, key, seconds)
+	}
+	if err := write(ctx); err != nil {
+		s.handleCacheFailure(ctx, engineCacheHashExpireOp, key, map[string]any{
+			"cache_key":   key,
+			"ttl_seconds": seconds,
+		}, err, write)
 	}
 }
 
@@ -1458,9 +1650,13 @@ func (s *Service) cacheConversationID(ctx context.Context, modelID string, conve
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, ids, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set conversations cache key=%s err=%v", key, err)
-	}
+	s.runCacheWrite(ctx, engineCacheConversationOp, key, map[string]any{
+		"model_id":  modelID,
+		"cache_key": key,
+		"count":     len(ids),
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, ids, ttl)
+	})
 }
 
 func (s *Service) cacheAnalyticsPayload(ctx context.Context, modelID string, payload map[string]any) {
@@ -1482,9 +1678,15 @@ func (s *Service) cacheLeaderboardScore(ctx context.Context, modelID string, sco
 	}
 	if s.redis != nil {
 		key := cachekeys.LeaderboardZSetKey()
-		if _, err := s.redis.ZaddFloatCtx(ctx, key, score, modelID); err != nil {
-			logx.WithContext(ctx).Errorf("enginepersist: zadd leaderboard key=%s trader=%s err=%v", key, modelID, err)
-		}
+		s.runCacheWrite(ctx, engineCacheLeaderboardOp, key, map[string]any{
+			"model_id":  modelID,
+			"cache_key": key,
+			"score":     score,
+			"scope":     "zset",
+		}, func(writeCtx context.Context) error {
+			_, err := s.redis.ZaddFloatCtx(writeCtx, key, score, modelID)
+			return err
+		})
 		return
 	}
 	if s.cache == nil {
@@ -1500,7 +1702,12 @@ func (s *Service) cacheLeaderboardScore(ctx context.Context, modelID string, sco
 	if ttl <= 0 {
 		return
 	}
-	if err := s.cache.SetWithExpireCtx(ctx, key, entry, ttl); err != nil {
-		logx.WithContext(ctx).Errorf("enginepersist: set leaderboard cache key=%s err=%v", key, err)
-	}
+	s.runCacheWrite(ctx, engineCacheLeaderboardOp, key, map[string]any{
+		"model_id":  modelID,
+		"cache_key": key,
+		"score":     score,
+		"scope":     "legacy",
+	}, func(writeCtx context.Context) error {
+		return s.cache.SetWithExpireCtx(writeCtx, key, entry, ttl)
+	})
 }
