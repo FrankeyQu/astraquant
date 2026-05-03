@@ -90,10 +90,10 @@ func (m *Manager) ApproveDecision(trader *VirtualTrader, decision *executorpkg.D
 		if err := m.enforcePositionCapacity(trader); err != nil {
 			return nil, err
 		}
-		if err := m.enforceSecondaryRisk(trader, decision, lev); err != nil {
+		if err := m.enforceOpenRisk(trader, decision, lev); err != nil {
 			return nil, fmt.Errorf("manager policy: %w", err)
 		}
-		checks = append(checks, "confidence_floor", "size_cap", "leverage_cap", "symbol_ownership", "position_count", "margin_cap")
+		checks = append(checks, "confidence_floor", "symbol_whitelist", "size_cap", "leverage_cap", "daily_loss_limit", "symbol_ownership", "position_count", "margin_cap")
 	}
 	if isClose {
 		if err := m.ensureCloseOwnership(trader, symbol); err != nil {
@@ -183,6 +183,111 @@ func (m *Manager) enforcePositionCapacity(trader *VirtualTrader) error {
 		return fmt.Errorf("manager policy: max positions reached (%d)", trader.RiskParams.MaxPositions)
 	}
 	return nil
+}
+
+func (m *Manager) enforceOpenRisk(trader *VirtualTrader, decision *executorpkg.Decision, leverage int) error {
+	if trader == nil || decision == nil {
+		return errors.New("manager policy: trader and decision are required")
+	}
+	if err := enforceAllowedSymbol(trader.RiskParams.AllowedSymbols, decision.Symbol); err != nil {
+		return err
+	}
+	if err := enforceDailyLossLimit(trader, time.Now().UTC()); err != nil {
+		return err
+	}
+	return m.enforceSecondaryRisk(trader, decision, leverage)
+}
+
+func enforceAllowedSymbol(allowed []string, symbol string) error {
+	symbol = normalizeSymbol(symbol)
+	if symbol == "" {
+		return errors.New("symbol is required")
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	for _, candidate := range allowed {
+		if normalizeSymbol(candidate) == symbol {
+			return nil
+		}
+	}
+	return fmt.Errorf("symbol %s is not in allowed_symbols", symbol)
+}
+
+func enforceDailyLossLimit(trader *VirtualTrader, now time.Time) error {
+	if trader == nil {
+		return errors.New("trader is required")
+	}
+	maxUSD := trader.RiskParams.MaxDailyLossUSD
+	maxPct := trader.RiskParams.MaxDailyLossPct
+	if maxUSD <= 0 && maxPct <= 0 {
+		return nil
+	}
+	trader.mu.RLock()
+	state := trader.DailyRisk
+	alloc := trader.ResourceAlloc
+	trader.mu.RUnlock()
+
+	start := state.StartEquityUSD
+	current := state.LastEquityUSD
+	if !sameUTCDate(state.UpdatedAt, now) {
+		start = alloc.CurrentEquityUSD
+		current = alloc.CurrentEquityUSD
+	}
+	if start <= 0 || current <= 0 {
+		return nil
+	}
+	loss := start - current
+	if loss <= 0 {
+		return nil
+	}
+	limit := positiveMin(maxUSD, start*(maxPct/100.0))
+	if limit <= 0 {
+		return nil
+	}
+	if loss > limit+1e-6 {
+		return fmt.Errorf("daily loss %.2f exceeds limit %.2f", loss, limit)
+	}
+	return nil
+}
+
+func updateDailyRiskState(prev DailyRiskState, equity float64, now time.Time) DailyRiskState {
+	if equity <= 0 {
+		return prev
+	}
+	now = now.UTC()
+	date := now.Format("2006-01-02")
+	if prev.Date != date || prev.StartEquityUSD <= 0 {
+		return DailyRiskState{
+			Date:           date,
+			StartEquityUSD: equity,
+			LastEquityUSD:  equity,
+			UpdatedAt:      now,
+		}
+	}
+	prev.LastEquityUSD = equity
+	prev.UpdatedAt = now
+	return prev
+}
+
+func sameUTCDate(left, right time.Time) bool {
+	if left.IsZero() || right.IsZero() {
+		return false
+	}
+	return left.UTC().Format("2006-01-02") == right.UTC().Format("2006-01-02")
+}
+
+func positiveMin(values ...float64) float64 {
+	min := 0.0
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if min == 0 || value < min {
+			min = value
+		}
+	}
+	return min
 }
 
 func (t *ApprovalToken) Validate(trader *VirtualTrader, decision *executorpkg.Decision) error {

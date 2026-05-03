@@ -777,7 +777,10 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 		}
 	}
 	decision.Leverage = lev
-	if err := m.enforceSecondaryRisk(trader, decision, lev); err != nil {
+	if err := m.enforceOpenRisk(trader, decision, lev); err != nil {
+		m.recordAuditDecisionEvent(AuditEventPolicyRejected, trader, decision, trace, approval, "pre_submit_risk_rejected", err, map[string]any{
+			"checks": approval.Checks,
+		})
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1011,7 +1014,9 @@ func (m *Manager) SyncTraderPositions(traderID string) error {
 	t.ResourceAlloc.MarginUsedUSD = marginUsed
 	t.ResourceAlloc.UnrealizedPnLUSD = unreal
 	t.ResourceAlloc.AvailableBalanceUSD = math.Max(0, acctVal-marginUsed)
-	t.UpdatedAt = time.Now()
+	syncedAt := time.Now()
+	t.DailyRisk = updateDailyRiskState(t.DailyRisk, acctVal, syncedAt)
+	t.UpdatedAt = syncedAt
 	t.mu.Unlock()
 	logx.Infof("manager: trader %s equity=%.2f usd margin_used=%.2f usd avail=%.2f usd unreal_pnl=%.2f usd", traderID, acctVal, marginUsed, t.ResourceAlloc.AvailableBalanceUSD, unreal)
 	m.recordAccountSnapshot(AccountSyncSnapshot{
@@ -1766,6 +1771,9 @@ func (m *Manager) selectCandidates(ctx context.Context, t *VirtualTrader, limit 
 	count := 0
 	for _, a := range assets {
 		if !a.IsActive {
+			continue
+		}
+		if err := enforceAllowedSymbol(t.RiskParams.AllowedSymbols, a.Symbol); err != nil {
 			continue
 		}
 		s, err := t.MarketProvider.Snapshot(ctx, a.Symbol)

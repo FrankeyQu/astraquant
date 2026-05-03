@@ -24,6 +24,9 @@ traders:
       max_positions: 3
       max_position_size_usd: 500
       max_margin_usage_pct: 60
+      max_daily_loss_usd: 1000
+      max_daily_loss_pct: 10
+      allowed_symbols: [BTC, ETH]
       major_coin_leverage: 5
       altcoin_leverage: 3
       min_risk_reward_ratio: 3.0
@@ -48,6 +51,9 @@ traders:
       max_positions: 2
       max_position_size_usd: 300
       max_margin_usage_pct: 50
+      max_daily_loss_usd: 800
+      max_daily_loss_pct: 8
+      allowed_symbols: [BTC, ETH]
       major_coin_leverage: 5
       altcoin_leverage: 3
       min_risk_reward_ratio: 2.5
