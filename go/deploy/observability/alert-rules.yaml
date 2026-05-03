@@ -1,0 +1,102 @@
+version: 1
+service: nof0-api
+owner: platform
+source:
+  liveness_endpoint: /healthz
+  readiness_endpoint: /readyz
+  metrics_endpoint: /debug/vars
+  scrape_interval: 15s
+  evaluation_interval: 1m
+
+alerts:
+  - id: nof0_api_down
+    severity: critical
+    signal: http_status
+    source: /healthz
+    condition: status_code != 200
+    for: 1m
+    summary: nof0-api process is not responding
+    runbook: Verify process/container status, inspect recent application logs, restart the API only after checking crash cause.
+
+  - id: nof0_api_not_ready
+    severity: critical
+    signal: http_status
+    source: /readyz
+    condition: status_code != 200
+    for: 2m
+    summary: nof0-api cannot serve traffic because a required configured dependency failed
+    runbook: Read /readyz JSON, identify the failing dependency, then verify Postgres, Redis, and provider configuration.
+
+  - id: nof0_metrics_missing
+    severity: warning
+    signal: expvar_presence
+    source: /debug/vars
+    condition: required_maps_missing
+    required_maps:
+      - db_writes_total
+      - persistence_latency_seconds
+      - cache_ops_total
+      - inconsistency_counters_total
+    for: 2m
+    summary: persistence metrics are missing from expvar output
+    runbook: Confirm the deployed binary includes observability endpoints and that the process has executed persistence paths.
+
+  - id: nof0_db_write_errors
+    severity: critical
+    signal: expvar_counter_delta
+    source: db_writes_total
+    selector_suffix: "|error"
+    condition: delta > 0
+    window: 5m
+    summary: database persistence writes are failing
+    runbook: Treat DB write failures as correctness issues. Check Postgres connectivity, migrations, constraint errors, and application error logs before resuming automated trading.
+
+  - id: nof0_persistence_avg_latency_high
+    severity: warning
+    signal: expvar_derived_rate
+    source:
+      numerator: persistence_latency_seconds
+      denominator: db_writes_total
+    condition: rate(numerator) / rate(denominator) > 1.5
+    window: 10m
+    summary: average persistence write latency is above 1.5 seconds
+    runbook: Inspect slow SQL logs, database CPU/IO, connection pool saturation, and recent batch sizes.
+
+  - id: nof0_cache_errors
+    severity: warning
+    signal: expvar_counter_delta
+    source: cache_ops_total
+    selector_suffix: "|error"
+    condition: delta >= 5
+    window: 5m
+    summary: cache operations are failing repeatedly
+    runbook: Check Redis availability, network timeouts, retry queue logs, and whether cache failures are transient or persistent.
+
+  - id: nof0_consistency_cache_hit_ratio_low
+    severity: warning
+    signal: expvar_ratio
+    source:
+      hit_key: cache_ops_total["market.consistency.cache_read|hit"]
+      miss_key: cache_ops_total["market.consistency.cache_read|miss"]
+    condition: hit / (hit + miss) < 0.95
+    window: 10m
+    summary: market consistency cache hit ratio is below 95 percent
+    runbook: Verify market ingestion is running, inspect cache hydration logs, and rerun market cache hydration if DB rows are current.
+
+  - id: nof0_market_inconsistencies
+    severity: warning
+    signal: expvar_counter_delta
+    source: inconsistency_counters_total
+    condition: delta > 0
+    window: 5m
+    summary: market data consistency checker found DB/cache/provider mismatches
+    runbook: Inspect market consistency logs by provider and symbol, compare live exchange data, rerun ingestion, then hydrate caches if necessary.
+
+  - id: nof0_market_inconsistencies_sustained
+    severity: critical
+    signal: expvar_counter_delta
+    source: inconsistency_counters_total
+    condition: delta >= 10
+    window: 15m
+    summary: market data inconsistencies are sustained or widespread
+    runbook: Pause automated trading if affected symbols are active, verify provider health, and confirm DB/cache values before resuming.

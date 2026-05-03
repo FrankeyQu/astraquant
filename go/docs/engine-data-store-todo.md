@@ -50,8 +50,10 @@
     - `GET /debug/vars` and `GET /metrics` expose the current `expvar` JSON payload for process and persistence metrics.
     - `GET /healthz` returns process liveness without external dependency checks.
     - `GET /readyz` checks configured Postgres/Redis dependencies and validates exchange/market provider wiring; required failures return HTTP 503.
-12. [ ] **Deployment alerts and dashboards.**
-    - Define alert thresholds for DB write failures, persistence latency, cache write/read failures, and consistency mismatches.
-    - Add scrape examples for `/debug/vars` or a Prometheus bridge if text exposition becomes required.
+12. [x] **Deployment alerts and dashboards.**
+    - Alert thresholds are defined in `deploy/observability/alert-rules.yaml` for API liveness/readiness, DB write failures, persistence latency, cache failures, cache hit ratio, and consistency mismatches.
+    - `deploy/observability/expvar-scrape.example.yaml` documents how to scrape `/debug/vars` expvar JSON and which maps must be collected.
+    - `scripts/check_observability.sh` provides a deployment smoke probe for `/healthz`, `/readyz`, and required expvar maps.
+    - `docs/observability.md` now includes the production alert catalog and operational rule that DB write failures or sustained market inconsistencies should block live automated trading.
 
 > Tracking convention: mark each item as `[ ]` / `[x]` once implemented in code and keep links to the relevant PRs for auditability.
