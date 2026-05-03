@@ -6,7 +6,6 @@ import { usePositions } from "@/lib/api/hooks/usePositions";
 import { useTrades } from "@/lib/api/hooks/useTrades";
 import { fmtUSD, pnlClass } from "@/lib/utils/formatters";
 import { getModelName } from "@/lib/model/meta";
-import { useTheme } from "@/store/useTheme";
 
 export default function ModelDetailsPanel({
   modelId: propModelId,

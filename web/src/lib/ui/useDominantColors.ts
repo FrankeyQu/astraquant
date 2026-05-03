@@ -3,7 +3,7 @@
 // Compute dominant color for a set of image URLs (same-origin) and cache results.
 // Returns a map from key (e.g., model id) to hex string like '#rrggbb'.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function rgbToHex(r: number, g: number, b: number) {
   const to2 = (n: number) => n.toString(16).padStart(2, "0");
@@ -36,14 +36,18 @@ export function useDominantColors(
 ) {
   const [colors, setColors] = useState<Record<string, string>>({});
   const cacheRef = useRef<Record<string, string>>({});
+  const iconEntries = useMemo(
+    () =>
+      Object.entries(iconByKey).filter(([, src]) => !!src) as [
+        string,
+        string,
+      ][],
+    [iconByKey],
+  );
 
   useEffect(() => {
     let cancelled = false;
-    const entries = Object.entries(iconByKey).filter(([, src]) => !!src) as [
-      string,
-      string,
-    ][];
-    entries.forEach(([key, src]) => {
+    iconEntries.forEach(([key, src]) => {
       if (cacheRef.current[src]) {
         setColors((prev) => ({ ...prev, [key]: cacheRef.current[src] }));
         return;
@@ -92,7 +96,7 @@ export function useDominantColors(
     return () => {
       cancelled = true;
     };
-  }, [JSON.stringify(iconByKey)]);
+  }, [iconEntries]);
 
   return colors;
 }

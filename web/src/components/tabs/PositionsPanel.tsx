@@ -25,8 +25,8 @@ export function PositionsPanel() {
   // remove theme branching; rely on CSS variables
   const { positionsByModel, isLoading, isError } = usePositions();
   const { data: totalsData } = useAccountTotals();
-  const [sortKey, setSortKey] = useState<SortKey>("unrealized_pnl");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [sortKey] = useState<SortKey>("unrealized_pnl");
+  const [sortDir] = useState<"asc" | "desc">("desc");
   const search = useSearchParams();
   const qModel = (search.get("model") || "ALL").toLowerCase();
   const qSymbol = (search.get("symbol") || "ALL").toUpperCase();

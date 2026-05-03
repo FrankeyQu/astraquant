@@ -6,12 +6,9 @@ import SocialLinks from "./SocialLinks";
 
 export function Header() {
   const theme = useTheme((s) => s.theme);
-  const resolved = useTheme((s) => s.resolved);
   const setTheme = useTheme((s) => s.setTheme);
   const barCls = `sticky top-0 z-50 w-full border-b backdrop-blur`;
-  const textCls = "";
   const hoverLink = "";
-  const brandCls = "";
 
   return (
     <header

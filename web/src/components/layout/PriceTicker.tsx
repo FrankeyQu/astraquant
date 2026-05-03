@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCryptoPrices } from "@/lib/api/hooks/useCryptoPrices";
 import { fmtUSD } from "@/lib/utils/formatters";
-import { useTheme } from "@/store/useTheme";
 
 const ORDER = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"] as const;
 

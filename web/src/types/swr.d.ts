@@ -1,7 +1,7 @@
 import "swr";
 
 declare module "swr" {
-  interface SWRConfiguration<_Data = unknown, _Error = unknown, _Fn = unknown> {
+  interface SWRConfiguration {
     refreshIntervalWhenHidden?: number;
     disableActivityTracking?: boolean;
   }

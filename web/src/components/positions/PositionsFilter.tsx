@@ -1,7 +1,6 @@
 "use client";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { useTheme } from "@/store/useTheme";
 
 const SIDES = ["ALL", "LONG", "SHORT"] as const;
 

@@ -2,7 +2,6 @@
 import { useAnalytics } from "@/lib/api/hooks/useAnalytics";
 import CoinIcon from "@/components/shared/CoinIcon";
 import ErrorBanner from "@/components/ui/ErrorBanner";
-import { useTheme } from "@/store/useTheme";
 
 export default function AnalyticsPanel() {
   const { data, isLoading, isError } = useAnalytics();

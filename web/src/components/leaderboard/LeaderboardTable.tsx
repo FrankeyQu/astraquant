@@ -54,7 +54,7 @@ export default function LeaderboardTable({
       return (Number(av) - Number(bv)) * dir;
     });
     return arr;
-  }, [rows, analytics, sortKey, sortDir]);
+  }, [rows, analytics, equityMap, tradeCount, sharpeMap, sortKey, sortDir]);
 
   return (
     <div
@@ -306,7 +306,6 @@ export default function LeaderboardTable({
   }
 
   function renderWinRate(id: string, rate?: number, trades?: number) {
-    const a = (analytics as any)?.[id];
     const wr = rate;
     const content = (
       <div className="space-y-1">

@@ -1,6 +1,5 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useTheme } from "@/store/useTheme";
 
 export default function ReadmePanel() {
   // Use CSS variables only
