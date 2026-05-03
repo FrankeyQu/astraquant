@@ -1,6 +1,9 @@
 "use client";
 import { useState } from "react";
-import { useAnalyticsMap } from "@/lib/api/hooks/useAnalyticsMap";
+import {
+  useAnalyticsMap,
+  type AnalyticsRow,
+} from "@/lib/api/hooks/useAnalyticsMap";
 import { fmtUSD } from "@/lib/utils/formatters";
 
 export default function ModelAnalyticsDetails({
@@ -9,7 +12,7 @@ export default function ModelAnalyticsDetails({
   modelId: string;
 }) {
   const { map } = useAnalyticsMap();
-  const a: any = map[modelId] || {};
+  const a = map[modelId];
   const [open, setOpen] = useState(false);
 
   if (!a || Object.keys(a).length === 0) return null;
@@ -290,7 +293,7 @@ function rangeFmt(a?: number, b?: number) {
   return `${A}/${B}`;
 }
 
-function percentMix(s: any) {
+function percentMix(s: NonNullable<AnalyticsRow["signals_breakdown_table"]>) {
   const L = s.long_signal_pct,
     S = s.short_signal_pct,
     H = s.hold_signal_pct,

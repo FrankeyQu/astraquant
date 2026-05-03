@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { getModelColor, getModelIcon } from "@/lib/model/meta";
 
 function darken(hex: string, amount = 0.15): string {
@@ -46,12 +47,13 @@ export function ModelLogoChip({
 
   return (
     <span style={style}>
-      <img
+      <Image
         src={icon}
         alt=""
         width={px - 2}
         height={px - 2}
         style={{ objectFit: "contain" }}
+        unoptimized
       />
     </span>
   );

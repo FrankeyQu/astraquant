@@ -3,7 +3,7 @@ import useSWR from "swr";
 import { activityAwareRefresh } from "./activityAware";
 import { endpoints, fetcher } from "../nof1";
 
-type PriceEntry = { symbol: string; price: number; timestamp: number };
+export type PriceEntry = { symbol: string; price: number; timestamp: number };
 type PricesResponse = {
   prices: Record<string, PriceEntry>;
   serverTime: number;

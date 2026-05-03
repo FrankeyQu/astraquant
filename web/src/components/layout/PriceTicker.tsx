@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useCryptoPrices } from "@/lib/api/hooks/useCryptoPrices";
+import {
+  useCryptoPrices,
+  type PriceEntry,
+} from "@/lib/api/hooks/useCryptoPrices";
 import { fmtUSD } from "@/lib/utils/formatters";
 
 const ORDER = ["BTC", "ETH", "SOL", "BNB", "DOGE", "XRP"] as const;
@@ -14,8 +17,8 @@ export default function PriceTicker() {
   const list = useMemo(() => {
     const vals = Object.values(prices);
     return ORDER.map((s) => vals.find((v) => v.symbol === s)).filter(
-      Boolean,
-    ) as typeof vals;
+      (value): value is PriceEntry => Boolean(value),
+    );
   }, [prices]);
 
   useEffect(() => {
@@ -57,7 +60,7 @@ export default function PriceTicker() {
           <div
             ref={trackRef}
             className="terminal-text flex h-full items-center gap-6 whitespace-nowrap text-xs leading-relaxed"
-            style={{ color: "var(--foreground)", overflowX: "auto" as any }}
+            style={{ color: "var(--foreground)", overflowX: "auto" }}
           >
             {renderItems(list)}
           </div>
@@ -67,7 +70,7 @@ export default function PriceTicker() {
   );
 }
 
-function renderItems(list: { symbol: string; price: number }[]) {
+function renderItems(list: PriceEntry[]) {
   return list.map((p) => (
     <span
       key={`${p.symbol}-${Math.random()}`}
