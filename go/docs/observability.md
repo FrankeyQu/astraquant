@@ -46,3 +46,33 @@ cache_ops_total["market.consistency.cache_read|hit"] /
 ```
 
 If Prometheus text exposition is required later, add a bridge/exporter instead of changing these application counters in place.
+
+## Deployment Assets
+
+Operational alert definitions live in:
+
+- `deploy/observability/alert-rules.yaml`
+- `deploy/observability/expvar-scrape.example.yaml`
+- `scripts/check_observability.sh`
+
+The alert file is vendor-neutral because the service currently emits expvar JSON. A collector can translate the rules into Prometheus, Grafana, Datadog, or another backend.
+
+Minimum production alerts:
+
+| Alert | Severity | Trigger |
+| --- | --- | --- |
+| `nof0_api_down` | critical | `/healthz` is not HTTP 200 for 1 minute. |
+| `nof0_api_not_ready` | critical | `/readyz` is not HTTP 200 for 2 minutes. |
+| `nof0_db_write_errors` | critical | Any `db_writes_total` `|error` counter increases over 5 minutes. |
+| `nof0_persistence_avg_latency_high` | warning | Average DB write latency is above 1.5 seconds over 10 minutes. |
+| `nof0_cache_errors` | warning | Cache error counters increase by at least 5 over 5 minutes. |
+| `nof0_consistency_cache_hit_ratio_low` | warning | Consistency cache-read hit ratio is below 95 percent over 10 minutes. |
+| `nof0_market_inconsistencies_sustained` | critical | Consistency counters increase by at least 10 over 15 minutes. |
+
+Operational rule: DB write failures and sustained market-data inconsistencies should block live automated trading until the root cause is understood.
+
+Manual probe:
+
+```bash
+NOF0_BASE_URL=http://127.0.0.1:8888 scripts/check_observability.sh
+```

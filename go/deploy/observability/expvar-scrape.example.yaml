@@ -1,0 +1,23 @@
+version: 1
+scrape_jobs:
+  - name: nof0-api-expvar
+    base_url: http://127.0.0.1:8888
+    interval: 15s
+    timeout: 3s
+    endpoints:
+      liveness: /healthz
+      readiness: /readyz
+      metrics: /debug/vars
+    expvar_maps:
+      - db_writes_total
+      - persistence_latency_seconds
+      - cache_ops_total
+      - inconsistency_counters_total
+    labels:
+      service: nof0-api
+      environment: prod
+
+notes:
+  - /debug/vars and /metrics currently return expvar JSON, not Prometheus text exposition.
+  - Use an expvar-capable collector or bridge these maps into Prometheus gauges/counters before applying Prometheus alert rules.
+  - Keep /healthz and /readyz as HTTP probes even when metrics collection is disabled.
