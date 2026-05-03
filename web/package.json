@@ -13,7 +13,7 @@
     "@vercel/analytics": "^1.5.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
-    "next": "16.0.7",
+    "next": "16.2.4",
     "numeral": "^2.0.6",
     "openai": "^6.6.0",
     "react": "19.2.1",
@@ -31,8 +31,11 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.0.7",
+    "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "postcss": "8.5.13"
   }
 }
