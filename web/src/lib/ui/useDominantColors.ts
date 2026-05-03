@@ -54,7 +54,7 @@ export function useDominantColors(
       }
       const img = new Image();
       // Same-origin assets from /public; crossOrigin not required, but keep safe
-      (img as any).crossOrigin = "anonymous";
+      img.crossOrigin = "anonymous";
       img.src = src;
       img.onload = () => {
         try {

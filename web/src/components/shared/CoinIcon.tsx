@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 
 export function coinSrc(symbol?: string): string | undefined {
   const k = String(symbol || "").toUpperCase();
@@ -31,7 +32,7 @@ export function CoinIcon({
   if (!src)
     return (
       <span className="inline-block text-[11px]">{String(symbol || "")}</span>
-    ) as any;
+    );
   const cls = size <= 16 ? "logo-chip logo-chip-sm" : "logo-chip logo-chip-md";
 
   return (
@@ -39,15 +40,16 @@ export function CoinIcon({
       className={`${cls} overflow-hidden`}
       style={{ width: size, height: size }}
     >
-      <img
+      <Image
         src={src}
         alt={String(symbol || "")}
         width={size}
         height={size}
         style={{ objectFit: "contain" }}
+        unoptimized
       />
     </span>
-  ) as any;
+  );
 }
 
 export default CoinIcon;

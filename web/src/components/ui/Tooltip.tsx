@@ -17,12 +17,12 @@ export default function Tooltip({
   trackPointer?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const longPress = useRef<any>(null);
+  const longPress = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const pointer = useRef<{ x: number; y: number } | null>(null);
-  const closeTimer = useRef<any>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const raf = useRef<number | null>(null);
   const [coarse] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) return false;
@@ -50,13 +50,9 @@ export default function Tooltip({
     document.addEventListener("touchstart", onDoc, { capture: true });
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("pointerdown", onDoc, {
-        capture: true,
-      } as any);
-      document.removeEventListener("click", onDoc, { capture: true } as any);
-      document.removeEventListener("touchstart", onDoc, {
-        capture: true,
-      } as any);
+      document.removeEventListener("pointerdown", onDoc, { capture: true });
+      document.removeEventListener("click", onDoc, { capture: true });
+      document.removeEventListener("touchstart", onDoc, { capture: true });
       document.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -123,7 +119,7 @@ export default function Tooltip({
       className="relative inline-flex items-center"
       onMouseEnter={(e) => {
         if (trackPointer)
-          pointer.current = { x: (e as any).clientX, y: (e as any).clientY };
+          pointer.current = { x: e.clientX, y: e.clientY };
         setOpen(true);
       }}
       onMouseLeave={() => {
@@ -132,7 +128,7 @@ export default function Tooltip({
       }}
       onMouseMove={(e) => {
         if (trackPointer && !coarse) {
-          pointer.current = { x: (e as any).clientX, y: (e as any).clientY };
+          pointer.current = { x: e.clientX, y: e.clientY };
           if (open) {
             if (raf.current) cancelAnimationFrame(raf.current);
             raf.current = requestAnimationFrame(() => {
@@ -178,7 +174,7 @@ export default function Tooltip({
               />
             )}
             <div
-              ref={tipRef as any}
+              ref={tipRef}
               className={clsx(
                 // 桌面悬浮下禁用指针事件，避免拦截鼠标
                 coarse ? "pointer-events-auto" : "pointer-events-none",

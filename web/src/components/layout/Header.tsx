@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useTheme } from "@/store/useTheme";
+import { useTheme, type Theme } from "@/store/useTheme";
 import SocialLinks from "./SocialLinks";
+
+const THEME_OPTIONS: Theme[] = ["dark", "light", "system"];
 
 export function Header() {
   const theme = useTheme((s) => s.theme);
@@ -65,7 +67,7 @@ export function Header() {
               className={`flex overflow-hidden rounded border`}
               style={{ borderColor: "var(--chip-border)" }}
             >
-              {["dark", "light", "system"].map((t) => (
+              {THEME_OPTIONS.map((t) => (
                 <button
                   key={t}
                   title={t}
@@ -78,7 +80,7 @@ export function Header() {
                         }
                       : { color: "var(--btn-inactive-fg)" }
                   }
-                  onClick={() => setTheme(t as any)}
+                  onClick={() => setTheme(t)}
                 >
                   {t}
                 </button>
