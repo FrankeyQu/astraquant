@@ -16,6 +16,31 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 		[]rest.Route{
 			{
 				Method:  http.MethodGet,
+				Path:    "/healthz",
+				Handler: HealthzHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/readyz",
+				Handler: ReadyzHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/metrics",
+				Handler: MetricsHandler(),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/debug/vars",
+				Handler: MetricsHandler(),
+			},
+		},
+	)
+
+	server.AddRoutes(
+		[]rest.Route{
+			{
+				Method:  http.MethodGet,
 				Path:    "/account-totals",
 				Handler: AccountTotalsHandler(serverCtx),
 			},

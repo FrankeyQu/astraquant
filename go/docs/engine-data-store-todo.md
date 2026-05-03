@@ -46,5 +46,12 @@
     - Market asset cache writes now use Redis pipelining for hash update + expiry.
     - Persistence and cache paths emit `expvar` metrics: `db_writes_total`, `persistence_latency_seconds`, `cache_ops_total` for write/hit/miss/error counters, and `inconsistency_counters_total`.
     - Cache hit ratios can be derived from `cache_ops_total` hit/miss counters for consistency checker cache reads.
+11. [x] **Expose runtime observability endpoints.**
+    - `GET /debug/vars` and `GET /metrics` expose the current `expvar` JSON payload for process and persistence metrics.
+    - `GET /healthz` returns process liveness without external dependency checks.
+    - `GET /readyz` checks configured Postgres/Redis dependencies and validates exchange/market provider wiring; required failures return HTTP 503.
+12. [ ] **Deployment alerts and dashboards.**
+    - Define alert thresholds for DB write failures, persistence latency, cache write/read failures, and consistency mismatches.
+    - Add scrape examples for `/debug/vars` or a Prometheus bridge if text exposition becomes required.
 
 > Tracking convention: mark each item as `[ ]` / `[x]` once implemented in code and keep links to the relevant PRs for auditability.
