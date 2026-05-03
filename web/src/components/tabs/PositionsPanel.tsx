@@ -289,11 +289,6 @@ function ExitPlanPeek({ plan }: { plan?: any }) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
-  if (
-    !plan ||
-    !(plan.profit_target || plan.stop_loss || plan.invalidation_condition)
-  )
-    return (<span style={{ color: "var(--muted-text)" }}>—</span>) as any;
 
   useEffect(() => {
     if (!open) return;
@@ -331,6 +326,13 @@ function ExitPlanPeek({ plan }: { plan?: any }) {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  if (
+    !plan ||
+    !(plan.profit_target || plan.stop_loss || plan.invalidation_condition)
+  ) {
+    return <span style={{ color: "var(--muted-text)" }}>—</span>;
+  }
 
   return (
     <>
@@ -383,5 +385,5 @@ function ExitPlanPeek({ plan }: { plan?: any }) {
           document.body,
         )}
     </>
-  ) as any;
+  );
 }

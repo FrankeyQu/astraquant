@@ -41,7 +41,7 @@ export default function AccountValueChart() {
   const { series, modelIds, isLoading, isError } = useAccountValueSeries();
   const [range, setRange] = useState<Range>("ALL");
   const [mode, setMode] = useState<Mode>("$");
-  const cutoffTimeRef = useRef<number>(0);
+  const [cutoffTime] = useState(() => Date.now() - 72 * 3600 * 1000);
   const [dataRows, setDataRows] = useState<ChartDataPoint[]>([]);
   const [ids, setIds] = useState<string[]>([]);
   const lastTsRef = useRef<number | null>(null);
@@ -49,7 +49,6 @@ export default function AccountValueChart() {
   const [vw, setVw] = useState<number>(0);
   const chartRef = useRef<HTMLDivElement | null>(null);
   const [shouldAnimate, setShouldAnimate] = useState(true);
-  const percentBaseRef = useRef<Record<string, number>>({});
 
   // End-logo size and dynamic right margin (to avoid clipping without huge whitespace)
   // Rendered size = base * 2/3. Targets: ~14px (<380), ~18px (<640), ~28px (<1024)
@@ -60,11 +59,6 @@ export default function AccountValueChart() {
   const chartRightMargin = Math.max(64, Math.round(endLogoSize * marginFactor));
 
   const cssSafe = (s: string) => s.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
-
-  // Initialize cutoff time on client side to avoid hydration mismatch
-  useEffect(() => {
-    cutoffTimeRef.current = Date.now() - 72 * 3600 * 1000;
-  }, []);
 
   // Track viewport width for responsive sizing (logo size, button sizing)
   useEffect(() => {
@@ -131,6 +125,17 @@ export default function AccountValueChart() {
   // Append-only updates to避免整表重建
   useEffect(() => {
     if (!series.length) return;
+    const scheduleCommit = (commit: () => void) => {
+      if (
+        typeof window !== "undefined" &&
+        typeof window.requestAnimationFrame === "function"
+      ) {
+        const raf = window.requestAnimationFrame(commit);
+        return () => window.cancelAnimationFrame(raf);
+      }
+      const timer = setTimeout(commit, 0);
+      return () => clearTimeout(timer);
+    };
     const nextIds = Array.from(new Set([...(ids || []), ...modelIds]));
     const sorted = [...series].sort((a, b) => a.timestamp - b.timestamp);
     const nextRows: ChartDataPoint[] = [...dataRows];
@@ -146,10 +151,11 @@ export default function AccountValueChart() {
         nextRows.push(row);
       }
       lastTsRef.current = sorted[sorted.length - 1]?.timestamp ?? null;
-      setDataRows(nextRows);
-      setIds(nextIds);
-      setActive((prev) => (prev.size ? prev : new Set(nextIds))); // initialize legend selection
-      return;
+      return scheduleCommit(() => {
+        setDataRows(nextRows);
+        setIds(nextIds);
+        setActive((prev) => (prev.size ? prev : new Set(nextIds))); // initialize legend selection
+      });
     }
     for (const p of sorted) {
       if (p.timestamp < (lastTsRef.current as number)) continue;
@@ -170,12 +176,14 @@ export default function AccountValueChart() {
       }
     }
     if (nextRows.length !== dataRows.length) {
-      setDataRows(nextRows);
-      setIds(nextIds);
-      // Disable animation after initial load to improve performance
-      if (nextRows.length > 50 && shouldAnimate) {
-        setShouldAnimate(false);
-      }
+      return scheduleCommit(() => {
+        setDataRows(nextRows);
+        setIds(nextIds);
+        // Disable animation after initial load to improve performance
+        if (nextRows.length > 50 && shouldAnimate) {
+          setShouldAnimate(false);
+        }
+      });
     }
   }, [series, shouldAnimate]);
 
@@ -188,8 +196,8 @@ export default function AccountValueChart() {
       typeof window === "undefined" ||
       typeof window.requestAnimationFrame !== "function"
     ) {
-      setShouldAnimate(false);
-      return;
+      const timer = setTimeout(() => setShouldAnimate(false), 0);
+      return () => clearTimeout(timer);
     }
     const raf = window.requestAnimationFrame(() => setShouldAnimate(false));
     return () => window.cancelAnimationFrame(raf);
@@ -199,27 +207,20 @@ export default function AccountValueChart() {
     let points = dataRows;
     // Filter by range
     if (range === "72H" && points.length) {
-      const cutoff = cutoffTimeRef.current;
-      points = points.filter((p) => (p.timestamp as Date).getTime() >= cutoff);
+      points = points.filter((p) => p.timestamp.getTime() >= cutoffTime);
     }
-    // Percent mode normalization - cache base values
+    // Percent mode normalization
     if (mode === "%") {
-      // Only recalculate bases if not cached
-      if (
-        Object.keys(percentBaseRef.current).length === 0 &&
-        points.length > 0
-      ) {
-        for (const id of ids) {
-          for (const p of points) {
-            const v = p[id];
-            if (typeof v === "number") {
-              percentBaseRef.current[id] = v;
-              break;
-            }
+      const bases: Record<string, number> = {};
+      for (const id of ids) {
+        for (const p of points) {
+          const v = p[id];
+          if (typeof v === "number") {
+            bases[id] = v;
+            break;
           }
         }
       }
-      const bases = percentBaseRef.current;
       points = points.map((p) => {
         const cp: ChartDataPoint = { ...p } as any;
         for (const id of ids) {
@@ -231,9 +232,6 @@ export default function AccountValueChart() {
         }
         return cp;
       });
-    } else {
-      // Clear cache when switching back to dollar mode
-      percentBaseRef.current = {};
     }
     // Downsample for 72H range to keep chart performant
     if (range === "72H" && points.length > MAX_POINTS_72H) {
@@ -246,7 +244,7 @@ export default function AccountValueChart() {
       points = sampled;
     }
     return { data: points, models: ids };
-  }, [dataRows, ids, range, mode]);
+  }, [dataRows, ids, range, mode, cutoffTime]);
 
   // prefer global brand colors from meta as background for logo chips
 
@@ -291,34 +289,35 @@ export default function AccountValueChart() {
     }
   };
 
-  const renderEndDot = (id: string) => (p: any) => {
-    const { cx, cy, index } = p || {};
-    if (cx == null || cy == null) return <g key={`empty-${id}-${index}`} />;
-    if (typeof lastIdxById[id] !== "number" || index !== lastIdxById[id])
-      return <g key={`empty-${id}-${index}`} />;
-    if (active.size && !active.has(id))
-      return <g key={`empty-${id}-${index}`} />;
-    const icon = getModelIcon(id);
-    const color = getModelColor(id);
-    const bg = color || "var(--chart-logo-bg)";
-    const ring =
-      typeof bg === "string" && bg.startsWith("#")
-        ? adjustLuminance(bg, -0.15)
-        : "var(--chart-logo-ring)";
-    const size = endLogoSize; // logo size to 2/3
-    // Halo radius reduced to 2/3 of previous setting
-    const haloR = Math.round((endLogoBaseSize / 3) * (2 / 3));
-    const valueStr = formatValue(lastValById[id]);
-    const isVisible = active.size ? active.has(id) : true;
-    const showValueChip = isVisible; // 始终展示可见系列的数值
-    const fontSize = vw < 380 ? 11 : vw < 640 ? 12 : 13;
-    // Rough width estimate for mono-ish font
-    const chipPadX = 8;
-    const charW = Math.round(fontSize * 0.62);
-    const chipTextW = valueStr.length * charW;
-    const chipH = fontSize + 8;
-    const chipW = chipTextW + chipPadX * 2;
-    return (
+  const renderEndDot = (id: string) => {
+    function EndDot(p: any) {
+      const { cx, cy, index } = p || {};
+      if (cx == null || cy == null) return <g key={`empty-${id}-${index}`} />;
+      if (typeof lastIdxById[id] !== "number" || index !== lastIdxById[id])
+        return <g key={`empty-${id}-${index}`} />;
+      if (active.size && !active.has(id))
+        return <g key={`empty-${id}-${index}`} />;
+      const icon = getModelIcon(id);
+      const color = getModelColor(id);
+      const bg = color || "var(--chart-logo-bg)";
+      const ring =
+        typeof bg === "string" && bg.startsWith("#")
+          ? adjustLuminance(bg, -0.15)
+          : "var(--chart-logo-ring)";
+      const size = endLogoSize; // logo size to 2/3
+      // Halo radius reduced to 2/3 of previous setting
+      const haloR = Math.round((endLogoBaseSize / 3) * (2 / 3));
+      const valueStr = formatValue(lastValById[id]);
+      const isVisible = active.size ? active.has(id) : true;
+      const showValueChip = isVisible; // 始终展示可见系列的数值
+      const fontSize = vw < 380 ? 11 : vw < 640 ? 12 : 13;
+      // Rough width estimate for mono-ish font
+      const chipPadX = 8;
+      const charW = Math.round(fontSize * 0.62);
+      const chipTextW = valueStr.length * charW;
+      const chipH = fontSize + 8;
+      const chipW = chipTextW + chipPadX * 2;
+      return (
       <g
         key={`${id}-dot-${index}`}
         transform={`translate(${cx}, ${cy})`}
@@ -397,7 +396,9 @@ export default function AccountValueChart() {
           </g>
         )}
       </g>
-    );
+      );
+    }
+    return EndDot;
   };
 
   // theme via CSS variables to avoid JS-bound colors

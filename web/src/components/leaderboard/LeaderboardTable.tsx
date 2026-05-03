@@ -268,7 +268,7 @@ export default function LeaderboardTable({
         <div>超额日收益</div>
         <div className="pl-3">均值：{fmtPct(mean)}</div>
         <div className="pl-3">标准差：{fmtPct(std)}</div>
-        <div className="opacity-80">{useSharpeHint()}</div>
+        <div className="opacity-80">{sharpeHint()}</div>
       </div>
     );
     const muted = n < 3;
@@ -422,7 +422,7 @@ function Th({ label }: { label: string }) {
   return <th className="py-1.5 pr-3 text-xs">{label}</th>;
 }
 
-function useSharpeHint() {
+function sharpeHint() {
   return "口径：基于已完成交易的日度超额收益（基准：BTC Buy&Hold），未年化，10%温莎化。";
 }
 
