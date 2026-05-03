@@ -309,15 +309,18 @@ type ListMeta struct {
 }
 
 type TraderRiskParams struct {
-	MaxPositions       int     `json:"max_positions"`
-	MaxPositionSizeUsd float64 `json:"max_position_size_usd"`
-	MaxMarginUsagePct  float64 `json:"max_margin_usage_pct"`
-	MajorCoinLeverage  int     `json:"major_coin_leverage"`
-	AltcoinLeverage    int     `json:"altcoin_leverage"`
-	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
-	MinConfidence      int     `json:"min_confidence"`
-	StopLossEnabled    bool    `json:"stop_loss_enabled"`
-	TakeProfitEnabled  bool    `json:"take_profit_enabled"`
+	MaxPositions       int      `json:"max_positions"`
+	MaxPositionSizeUsd float64  `json:"max_position_size_usd"`
+	MaxMarginUsagePct  float64  `json:"max_margin_usage_pct"`
+	MaxDailyLossUsd    float64  `json:"max_daily_loss_usd"`
+	MaxDailyLossPct    float64  `json:"max_daily_loss_pct"`
+	MajorCoinLeverage  int      `json:"major_coin_leverage"`
+	AltcoinLeverage    int      `json:"altcoin_leverage"`
+	MinRiskRewardRatio float64  `json:"min_risk_reward_ratio"`
+	MinConfidence      int      `json:"min_confidence"`
+	StopLossEnabled    bool     `json:"stop_loss_enabled"`
+	TakeProfitEnabled  bool     `json:"take_profit_enabled"`
+	AllowedSymbols     []string `json:"allowed_symbols,omitempty"`
 }
 
 type TraderExecGuards struct {
@@ -328,17 +331,31 @@ type TraderExecGuards struct {
 	PauseDurationOnBreach   string  `json:"pause_duration_on_breach"`
 }
 
+type TraderRiskState struct {
+	DailyDate           string  `json:"daily_date,omitempty"`
+	DailyStartEquityUsd float64 `json:"daily_start_equity_usd,omitempty"`
+	CurrentEquityUsd    float64 `json:"current_equity_usd,omitempty"`
+	DailyLossUsd        float64 `json:"daily_loss_usd,omitempty"`
+	DailyLossPct        float64 `json:"daily_loss_pct,omitempty"`
+	DailyLossLimitUsd   float64 `json:"daily_loss_limit_usd,omitempty"`
+	Blocked             bool    `json:"blocked"`
+	BlockReason         string  `json:"block_reason,omitempty"`
+	TriggeredAt         string  `json:"triggered_at,omitempty"`
+	UpdatedAt           string  `json:"updated_at,omitempty"`
+}
+
 type TraderStatus struct {
-	TraderId            string      `json:"trader_id"`
-	Status              string      `json:"status"`
-	IsRunning           bool        `json:"is_running"`
-	ActiveConfigVersion int64       `json:"active_config_version"`
-	LastDecisionAt      string      `json:"last_decision_at,omitempty"`
-	NextDecisionAt      string      `json:"next_decision_at,omitempty"`
-	PausedUntil         string      `json:"paused_until,omitempty"`
-	PauseReason         string      `json:"pause_reason,omitempty"`
-	UpdatedAt           string      `json:"updated_at,omitempty"`
-	Detail              interface{} `json:"detail,omitempty"`
+	TraderId            string           `json:"trader_id"`
+	Status              string           `json:"status"`
+	IsRunning           bool             `json:"is_running"`
+	ActiveConfigVersion int64            `json:"active_config_version"`
+	LastDecisionAt      string           `json:"last_decision_at,omitempty"`
+	NextDecisionAt      string           `json:"next_decision_at,omitempty"`
+	PausedUntil         string           `json:"paused_until,omitempty"`
+	PauseReason         string           `json:"pause_reason,omitempty"`
+	UpdatedAt           string           `json:"updated_at,omitempty"`
+	RiskState           *TraderRiskState `json:"risk_state,omitempty"`
+	Detail              interface{}      `json:"detail,omitempty"`
 }
 
 type TraderSummary struct {

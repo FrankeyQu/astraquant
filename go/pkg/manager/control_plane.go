@@ -254,6 +254,9 @@ func (c *ControlPlane) currentState(ctx context.Context, trader TraderConfig) (C
 			state = TraderStatePaused
 		}
 	}
+	if record.Detail.Risk != nil && record.Detail.Risk.Circuit != nil && record.Detail.Risk.Circuit.Blocked {
+		state = TraderStatePaused
+	}
 	snap = ControlStateSnapshot{
 		TraderID:            trader.ID,
 		State:               state,
@@ -275,10 +278,23 @@ func (c *ControlPlane) persistState(ctx context.Context, snap ControlStateSnapsh
 		return nil
 	}
 	detail := repo.RuntimeStateDetail{}
+	if existing, err := runtimeRepo.GetState(ctx, snap.TraderID); err != nil {
+		return err
+	} else if existing != nil {
+		detail = existing.Detail
+	}
 	if snap.State == TraderStatePaused || snap.PauseUntil != nil || strings.TrimSpace(snap.PauseReason) != "" {
 		detail.Pause = &repo.RuntimePauseDetail{
 			Until:  snap.PauseUntil,
 			Reason: snap.PauseReason,
+		}
+	} else {
+		detail.Pause = nil
+	}
+	if snap.State == TraderStateRunning && detail.Risk != nil && detail.Risk.Circuit != nil {
+		detail.Risk.Circuit = nil
+		if detail.Risk.Daily == nil {
+			detail.Risk = nil
 		}
 	}
 	return runtimeRepo.UpsertState(ctx, repo.RuntimeStateRecord{

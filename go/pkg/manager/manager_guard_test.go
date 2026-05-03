@@ -12,6 +12,7 @@ import (
 	"nof0-api/pkg/exchange"
 	executorpkg "nof0-api/pkg/executor"
 	"nof0-api/pkg/market"
+	"nof0-api/pkg/repo"
 )
 
 func TestManagerAssignReleaseVirtualPosition(t *testing.T) {
@@ -248,10 +249,12 @@ func TestPreSubmitRiskRejectsDailyLossAfterAccountSync(t *testing.T) {
 		LastEquityUSD:  10_000,
 		UpdatedAt:      now,
 	}
+	runtimeRepo := &memoryRuntimeRepo{}
 	m := &Manager{
 		traders:        map[string]*VirtualTrader{trader.ID: trader},
 		positionOwners: make(map[string]string),
 		persistence:    &auditRecordingPersistence{},
+		runtimeRepo:    runtimeRepo,
 	}
 
 	err := m.ExecuteDecision(trader, &executorpkg.Decision{
@@ -265,8 +268,66 @@ func TestPreSubmitRiskRejectsDailyLossAfterAccountSync(t *testing.T) {
 
 	require.ErrorContains(t, err, "daily loss")
 	require.Zero(t, ex.placeOrders, "daily loss rejection must happen before exchange submission")
+	require.Equal(t, TraderStatePaused, trader.State, "daily loss breach must trip circuit breaker")
+	require.True(t, trader.RiskCircuit.Blocked)
+	require.NotNil(t, runtimeRepo.state)
+	require.NotNil(t, runtimeRepo.state.Detail.Risk)
+	require.NotNil(t, runtimeRepo.state.Detail.Risk.Circuit)
+	require.True(t, runtimeRepo.state.Detail.Risk.Circuit.Blocked)
+	require.False(t, runtimeRepo.state.IsRunning)
 	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventApproved)
 	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestRuntimeStatePersistsAndHydratesDailyRisk(t *testing.T) {
+	now := time.Now().UTC()
+	trader := testPolicyTrader(&countingExchangeProvider{}, &staticMarketProvider{})
+	trader.DailyRisk = DailyRiskState{
+		Date:           now.Format("2006-01-02"),
+		StartEquityUSD: 10_000,
+		LastEquityUSD:  9_250,
+		UpdatedAt:      now,
+	}
+	trader.RiskCircuit = RiskCircuitState{
+		Blocked:     true,
+		Date:        trader.DailyRisk.Date,
+		Reason:      "daily loss 750.00 exceeds limit 500.00",
+		TriggeredAt: now,
+	}
+	trader.State = TraderStatePaused
+
+	detail := buildRuntimeStateDetail(trader)
+	require.NotNil(t, detail.Risk)
+	require.NotNil(t, detail.Risk.Daily)
+	require.NotNil(t, detail.Risk.Circuit)
+	require.True(t, detail.Risk.Circuit.Blocked)
+
+	runtimeRepo := &memoryRuntimeRepo{
+		state: &repo.RuntimeStateSnapshot{
+			RuntimeStateRecord: repo.RuntimeStateRecord{
+				TraderID:            trader.ID,
+				ActiveConfigVersion: 7,
+				IsRunning:           false,
+				Detail:              detail,
+			},
+			UpdatedAt: now,
+		},
+	}
+	hydrated := testPolicyTrader(&countingExchangeProvider{}, &staticMarketProvider{})
+	hydrated.ConfigVersion = 1
+	m := &Manager{runtimeRepo: runtimeRepo}
+
+	run, ok := m.hydrateTraderFromState(context.Background(), hydrated)
+
+	require.True(t, ok)
+	require.False(t, run)
+	require.Equal(t, int64(7), hydrated.ConfigVersion)
+	require.Equal(t, trader.DailyRisk.Date, hydrated.DailyRisk.Date)
+	require.Equal(t, trader.DailyRisk.StartEquityUSD, hydrated.DailyRisk.StartEquityUSD)
+	require.Equal(t, trader.DailyRisk.LastEquityUSD, hydrated.DailyRisk.LastEquityUSD)
+	require.True(t, hydrated.RiskCircuit.Blocked)
+	require.Equal(t, trader.RiskCircuit.Reason, hydrated.RiskCircuit.Reason)
+	require.Equal(t, TraderStatePaused, hydrated.State)
 }
 
 type validationErrorExecutor struct {
@@ -407,6 +468,40 @@ func (p *auditRecordingPersistence) RecordAnalytics(context.Context, AnalyticsSn
 
 func (p *auditRecordingPersistence) HydrateCaches(context.Context, []string) error {
 	return nil
+}
+
+type memoryRuntimeRepo struct {
+	state     *repo.RuntimeStateSnapshot
+	upserts   []repo.RuntimeStateRecord
+	cooldowns []repo.SymbolCooldownRecord
+}
+
+func (r *memoryRuntimeRepo) UpsertState(_ context.Context, record repo.RuntimeStateRecord) error {
+	r.upserts = append(r.upserts, record)
+	r.state = &repo.RuntimeStateSnapshot{
+		RuntimeStateRecord: record,
+		UpdatedAt:          time.Now().UTC(),
+	}
+	return nil
+}
+
+func (r *memoryRuntimeRepo) UpsertCooldown(_ context.Context, record repo.SymbolCooldownRecord) error {
+	r.cooldowns = append(r.cooldowns, record)
+	return nil
+}
+
+func (r *memoryRuntimeRepo) GetState(_ context.Context, traderID string) (*repo.RuntimeStateSnapshot, error) {
+	if r.state == nil || r.state.TraderID != traderID {
+		return nil, nil
+	}
+	return r.state, nil
+}
+
+func (r *memoryRuntimeRepo) ListCooldowns(_ context.Context, traderID string) ([]repo.SymbolCooldownRecord, error) {
+	if r.state == nil || r.state.TraderID != traderID {
+		return nil, nil
+	}
+	return r.cooldowns, nil
 }
 
 func requireAuditEvent(t *testing.T, events []AuditEvent, eventType AuditEventType) {

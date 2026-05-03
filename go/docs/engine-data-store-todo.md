@@ -62,5 +62,9 @@
     - AI decisions are approved as intent first, then re-checked after account sync immediately before order submission.
     - New opens support hard `allowed_symbols`, `max_daily_loss_usd`, and `max_daily_loss_pct` guards in addition to existing position size, leverage, margin, confidence, ownership, and position-count checks.
     - `docs/risk-controls.md` documents the current hard guard contract and live-trading acknowledgement requirements.
+14. [x] **Persist daily risk state and trip circuit breaker.**
+    - `DailyRiskState` is stored in `trader_runtime_state.detail.risk.daily`, so daily loss limits survive process restart.
+    - Daily loss breach moves the trader to `paused`, persists `detail.risk.circuit`, and requires manual `start` / `resume` before running again.
+    - Trader status exposes `risk_state` for operator inspection.
 
 > Tracking convention: mark each item as `[ ]` / `[x]` once implemented in code and keep links to the relevant PRs for auditability.

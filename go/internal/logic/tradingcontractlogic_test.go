@@ -209,6 +209,62 @@ func TestTradingContractControlPauseResumeStateFlow(t *testing.T) {
 	require.Equal(t, "running", resume.ControlState)
 }
 
+func TestTradingContractStatusIncludesRiskState(t *testing.T) {
+	now := time.Now().UTC()
+	trader := managerpkg.TraderConfig{
+		ID:               "risk",
+		Name:             "Risk",
+		ExchangeProvider: "sim",
+		MarketProvider:   "market",
+		ExecutionMode:    managerpkg.ExecutionModePaper,
+		Version:          3,
+		RiskParams: managerpkg.RiskParameters{
+			MaxDailyLossUSD: 500,
+			MaxDailyLossPct: 10,
+		},
+	}
+	svcCtx := &svc.ServiceContext{
+		ManagerConfig: &managerpkg.Config{Traders: []managerpkg.TraderConfig{trader}},
+		TraderRuntimeRepo: &fakeTraderRuntimeRepo{
+			state: &repo.RuntimeStateSnapshot{
+				RuntimeStateRecord: repo.RuntimeStateRecord{
+					TraderID:            trader.ID,
+					ActiveConfigVersion: 3,
+					IsRunning:           true,
+					Detail: repo.RuntimeStateDetail{
+						Risk: &repo.RuntimeRiskDetail{
+							Daily: &repo.RuntimeDailyRiskDetail{
+								Date:           now.Format("2006-01-02"),
+								StartEquityUSD: 10_000,
+								LastEquityUSD:  9_250,
+								UpdatedAt:      &now,
+							},
+							Circuit: &repo.RuntimeRiskCircuitDetail{
+								Blocked:     true,
+								Date:        now.Format("2006-01-02"),
+								Reason:      "daily loss 750.00 exceeds limit 500.00",
+								TriggeredAt: &now,
+							},
+						},
+					},
+				},
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	resp, err := NewTraderStatusLogic(context.Background(), svcCtx).TraderStatus(&types.TraderPathRequest{TraderId: "risk"})
+
+	require.NoError(t, err)
+	require.Equal(t, "paused", resp.Status.Status)
+	require.False(t, resp.Status.IsRunning)
+	require.NotNil(t, resp.Status.RiskState)
+	require.True(t, resp.Status.RiskState.Blocked)
+	require.Equal(t, 750.0, resp.Status.RiskState.DailyLossUsd)
+	require.Equal(t, 500.0, resp.Status.RiskState.DailyLossLimitUsd)
+	require.Contains(t, resp.Status.RiskState.BlockReason, "daily loss")
+}
+
 func TestTradingContractOrderPreviewDoesNotSubmitOrders(t *testing.T) {
 	svcCtx := testTradingControlServiceContext()
 
@@ -569,6 +625,40 @@ func (r *fakeControlCommandRepo) Complete(context.Context, string, bool, json.Ra
 
 func (r *fakeControlCommandRepo) Fail(context.Context, string, string, json.RawMessage) error {
 	return r.err
+}
+
+type fakeTraderRuntimeRepo struct {
+	state     *repo.RuntimeStateSnapshot
+	upserts   []repo.RuntimeStateRecord
+	cooldowns []repo.SymbolCooldownRecord
+}
+
+func (r *fakeTraderRuntimeRepo) UpsertState(_ context.Context, record repo.RuntimeStateRecord) error {
+	r.upserts = append(r.upserts, record)
+	r.state = &repo.RuntimeStateSnapshot{
+		RuntimeStateRecord: record,
+		UpdatedAt:          time.Now().UTC(),
+	}
+	return nil
+}
+
+func (r *fakeTraderRuntimeRepo) UpsertCooldown(_ context.Context, record repo.SymbolCooldownRecord) error {
+	r.cooldowns = append(r.cooldowns, record)
+	return nil
+}
+
+func (r *fakeTraderRuntimeRepo) GetState(_ context.Context, traderID string) (*repo.RuntimeStateSnapshot, error) {
+	if r.state == nil || r.state.TraderID != traderID {
+		return nil, nil
+	}
+	return r.state, nil
+}
+
+func (r *fakeTraderRuntimeRepo) ListCooldowns(_ context.Context, traderID string) ([]repo.SymbolCooldownRecord, error) {
+	if r.state == nil || r.state.TraderID != traderID {
+		return nil, nil
+	}
+	return r.cooldowns, nil
 }
 
 func (r *fakeControlCommandRepo) Cancel(context.Context, string, string, json.RawMessage) error {

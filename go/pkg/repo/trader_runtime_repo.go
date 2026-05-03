@@ -19,6 +19,7 @@ type RuntimeStateDetail struct {
 	Pause       *RuntimePauseDetail       `json:"pause,omitempty"`
 	Allocation  *RuntimeAllocationDetail  `json:"allocation,omitempty"`
 	Performance *RuntimePerformanceDetail `json:"performance,omitempty"`
+	Risk        *RuntimeRiskDetail        `json:"risk,omitempty"`
 }
 
 type RuntimeDecisionDetail struct {
@@ -40,6 +41,25 @@ type RuntimeAllocationDetail struct {
 type RuntimePerformanceDetail struct {
 	SharpeRatio float64 `json:"sharpe_ratio,omitempty"`
 	TotalPnLUSD float64 `json:"total_pnl_usd,omitempty"`
+}
+
+type RuntimeRiskDetail struct {
+	Daily   *RuntimeDailyRiskDetail   `json:"daily,omitempty"`
+	Circuit *RuntimeRiskCircuitDetail `json:"circuit,omitempty"`
+}
+
+type RuntimeDailyRiskDetail struct {
+	Date           string     `json:"date,omitempty"`
+	StartEquityUSD float64    `json:"start_equity_usd,omitempty"`
+	LastEquityUSD  float64    `json:"last_equity_usd,omitempty"`
+	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+}
+
+type RuntimeRiskCircuitDetail struct {
+	Blocked     bool       `json:"blocked,omitempty"`
+	Date        string     `json:"date,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
+	TriggeredAt *time.Time `json:"triggered_at,omitempty"`
 }
 
 // RuntimeStateRecord encapsulates an upsert payload for trader_runtime_state.

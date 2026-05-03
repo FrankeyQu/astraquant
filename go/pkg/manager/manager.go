@@ -309,11 +309,29 @@ func buildRuntimeStateDetail(trader *VirtualTrader) repo.RuntimeStateDetail {
 		return repo.RuntimeStateDetail{}
 	}
 	detail := repo.RuntimeStateDetail{}
-	if !trader.LastDecisionAt.IsZero() {
-		last := trader.LastDecisionAt.UTC()
+
+	trader.mu.RLock()
+	lastDecisionAt := trader.LastDecisionAt
+	decisionInterval := trader.DecisionInterval
+	pauseUntil := trader.PauseUntil
+	state := trader.State
+	alloc := trader.ResourceAlloc
+	dailyRisk := trader.DailyRisk
+	riskCircuit := trader.RiskCircuit
+	var performance *PerformanceMetrics
+	if trader.Performance != nil {
+		performance = &PerformanceMetrics{
+			SharpeRatio: trader.Performance.SharpeRatio,
+			TotalPnLUSD: trader.Performance.TotalPnLUSD,
+		}
+	}
+	trader.mu.RUnlock()
+
+	if !lastDecisionAt.IsZero() {
+		last := lastDecisionAt.UTC()
 		var next *time.Time
-		if trader.DecisionInterval > 0 {
-			nextTime := last.Add(trader.DecisionInterval)
+		if decisionInterval > 0 {
+			nextTime := last.Add(decisionInterval)
 			next = &nextTime
 		}
 		detail.Decision = &repo.RuntimeDecisionDetail{
@@ -321,10 +339,14 @@ func buildRuntimeStateDetail(trader *VirtualTrader) repo.RuntimeStateDetail {
 			NextAt: next,
 		}
 	}
-	if !trader.PauseUntil.IsZero() && trader.PauseUntil.After(time.Now()) {
-		until := trader.PauseUntil.UTC()
+	if riskCircuit.Blocked {
+		detail.Pause = &repo.RuntimePauseDetail{
+			Reason: riskCircuitBreakerReason,
+		}
+	} else if !pauseUntil.IsZero() && pauseUntil.After(time.Now()) {
+		until := pauseUntil.UTC()
 		reason := "pause"
-		if trader.State == TraderStatePaused {
+		if state == TraderStatePaused {
 			reason = "manual"
 		}
 		detail.Pause = &repo.RuntimePauseDetail{
@@ -332,7 +354,6 @@ func buildRuntimeStateDetail(trader *VirtualTrader) repo.RuntimeStateDetail {
 			Reason: reason,
 		}
 	}
-	alloc := trader.ResourceAlloc
 	if alloc.AllocatedEquityUSD > 0 || alloc.MarginUsedUSD > 0 || alloc.AvailableBalanceUSD > 0 || alloc.CurrentEquityUSD > 0 {
 		detail.Allocation = &repo.RuntimeAllocationDetail{
 			EquityUSD:          alloc.CurrentEquityUSD,
@@ -340,11 +361,41 @@ func buildRuntimeStateDetail(trader *VirtualTrader) repo.RuntimeStateDetail {
 			AvailableMarginUSD: alloc.AvailableBalanceUSD,
 		}
 	}
-	if trader.Performance != nil {
+	if performance != nil {
 		detail.Performance = &repo.RuntimePerformanceDetail{
-			SharpeRatio: trader.Performance.SharpeRatio,
-			TotalPnLUSD: trader.Performance.TotalPnLUSD,
+			SharpeRatio: performance.SharpeRatio,
+			TotalPnLUSD: performance.TotalPnLUSD,
 		}
+	}
+	risk := repo.RuntimeRiskDetail{}
+	if dailyRisk.Date != "" || dailyRisk.StartEquityUSD > 0 || dailyRisk.LastEquityUSD > 0 || !dailyRisk.UpdatedAt.IsZero() {
+		var updatedAt *time.Time
+		if !dailyRisk.UpdatedAt.IsZero() {
+			ts := dailyRisk.UpdatedAt.UTC()
+			updatedAt = &ts
+		}
+		risk.Daily = &repo.RuntimeDailyRiskDetail{
+			Date:           dailyRisk.Date,
+			StartEquityUSD: dailyRisk.StartEquityUSD,
+			LastEquityUSD:  dailyRisk.LastEquityUSD,
+			UpdatedAt:      updatedAt,
+		}
+	}
+	if riskCircuit.Blocked || riskCircuit.Reason != "" || !riskCircuit.TriggeredAt.IsZero() {
+		var triggeredAt *time.Time
+		if !riskCircuit.TriggeredAt.IsZero() {
+			ts := riskCircuit.TriggeredAt.UTC()
+			triggeredAt = &ts
+		}
+		risk.Circuit = &repo.RuntimeRiskCircuitDetail{
+			Blocked:     riskCircuit.Blocked,
+			Date:        riskCircuit.Date,
+			Reason:      riskCircuit.Reason,
+			TriggeredAt: triggeredAt,
+		}
+	}
+	if risk.Daily != nil || risk.Circuit != nil {
+		detail.Risk = &risk
 	}
 	return detail
 }
@@ -384,11 +435,41 @@ func (m *Manager) hydrateTraderFromState(ctx context.Context, trader *VirtualTra
 		trader.Performance.SharpeRatio = perf.SharpeRatio
 		trader.Performance.TotalPnLUSD = perf.TotalPnLUSD
 	}
-	if snapshot.IsRunning {
-		trader.State = TraderStateRunning
-	} else {
-		trader.State = TraderStateStopped
+	if risk := snapshot.Detail.Risk; risk != nil {
+		if daily := risk.Daily; daily != nil {
+			trader.DailyRisk = DailyRiskState{
+				Date:           daily.Date,
+				StartEquityUSD: daily.StartEquityUSD,
+				LastEquityUSD:  daily.LastEquityUSD,
+			}
+			if daily.UpdatedAt != nil {
+				trader.DailyRisk.UpdatedAt = daily.UpdatedAt.UTC()
+			}
+		}
+		if circuit := risk.Circuit; circuit != nil {
+			trader.RiskCircuit = RiskCircuitState{
+				Blocked: circuit.Blocked,
+				Date:    circuit.Date,
+				Reason:  circuit.Reason,
+			}
+			if circuit.TriggeredAt != nil {
+				trader.RiskCircuit.TriggeredAt = circuit.TriggeredAt.UTC()
+			}
+		}
 	}
+	state := TraderStateStopped
+	if snapshot.IsRunning {
+		state = TraderStateRunning
+	}
+	if snapshot.Detail.Pause != nil {
+		if snapshot.Detail.Pause.Until == nil || snapshot.Detail.Pause.Until.After(time.Now().UTC()) {
+			state = TraderStatePaused
+		}
+	}
+	if trader.RiskCircuit.Blocked {
+		state = TraderStatePaused
+	}
+	trader.State = state
 	if cooldowns, err := m.runtimeRepo.ListCooldowns(ctx, trader.ID); err != nil {
 		logx.WithContext(ctx).Errorf("manager: load cooldowns trader=%s err=%v", trader.ID, err)
 	} else {
@@ -1016,6 +1097,7 @@ func (m *Manager) SyncTraderPositions(traderID string) error {
 	t.ResourceAlloc.AvailableBalanceUSD = math.Max(0, acctVal-marginUsed)
 	syncedAt := time.Now()
 	t.DailyRisk = updateDailyRiskState(t.DailyRisk, acctVal, syncedAt)
+	clearStaleRiskCircuit(t, t.DailyRisk)
 	t.UpdatedAt = syncedAt
 	t.mu.Unlock()
 	logx.Infof("manager: trader %s equity=%.2f usd margin_used=%.2f usd avail=%.2f usd unreal_pnl=%.2f usd", traderID, acctVal, marginUsed, t.ResourceAlloc.AvailableBalanceUSD, unreal)
@@ -1039,6 +1121,7 @@ func (m *Manager) SyncTraderPositions(traderID string) error {
 			UpdatedAt:      t.Performance.UpdatedAt,
 		})
 	}
+	m.persistRuntimeState(ctx, t)
 	return m.ReconcileTraderPositions(ctx, traderID)
 }
 

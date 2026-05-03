@@ -28,6 +28,21 @@ When both `max_daily_loss_usd` and `max_daily_loss_pct` are set, the stricter po
 
 This second check prevents stale approval from bypassing daily loss, margin, or size limits after account state changes.
 
+## Daily Loss State And Circuit Breaker
+
+The UTC daily equity baseline is persisted in `trader_runtime_state.detail.risk.daily`, so a process restart does not reset the daily loss counter.
+
+When a new-open check exceeds `max_daily_loss_usd` or `max_daily_loss_pct`:
+
+- the trader is moved to `paused`;
+- `trader_runtime_state.is_running` is written as `false`;
+- `detail.risk.circuit` records the trigger date, reason, and timestamp;
+- no exchange order is submitted.
+
+Manual `start` / `resume` clears the circuit flag, but it does not bypass risk policy. The next open still refreshes account state and re-runs the hard daily loss check before any exchange submission.
+
+`GET /traders/:traderId/status` exposes `risk_state` with daily start equity, current equity, daily loss, effective daily loss limit, blocked state, block reason, and timestamps.
+
 ## Operational Rule
 
 Live trading must remain blocked unless:
