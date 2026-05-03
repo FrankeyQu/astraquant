@@ -1,6 +1,5 @@
 "use client";
 
-import type { SWRConfiguration } from "swr";
 import { createTimeAlignedInterval } from "./timeAligned";
 
 export interface ActivityAwareConfig {

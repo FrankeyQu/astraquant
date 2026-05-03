@@ -185,7 +185,7 @@ export default function AccountValueChart() {
         }
       });
     }
-  }, [series, shouldAnimate]);
+  }, [series, shouldAnimate, dataRows, ids, modelIds]);
 
   useEffect(() => {
     // Stop Recharts line tweening right after first render; otherwise fresh incremental points
@@ -562,7 +562,7 @@ export default function AccountValueChart() {
                         strokeDasharray="4 4"
                       />
                     )}
-                    {models.map((id, i) => (
+                    {models.map((id) => (
                       <Line
                         key={id}
                         type="monotone"

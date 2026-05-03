@@ -7,14 +7,12 @@ export default function Tooltip({
   content,
   children,
   placement = "top",
-  closeable = true,
   closeDelay = 120,
   trackPointer = true,
 }: {
   content: React.ReactNode;
   children: React.ReactNode;
   placement?: "top" | "bottom" | "left" | "right";
-  closeable?: boolean;
   closeDelay?: number;
   trackPointer?: boolean;
 }) {

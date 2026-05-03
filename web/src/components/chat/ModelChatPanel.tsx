@@ -1,8 +1,8 @@
 "use client";
 import { useConversations } from "@/lib/api/hooks/useConversations";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import { getModelName, getModelColor, getModelMeta } from "@/lib/model/meta";
+import { useMemo, useState } from "react";
+import { getModelName, getModelColor } from "@/lib/model/meta";
 import { ModelLogoChip } from "@/components/shared/ModelLogo";
 // theme handled via CSS variables
 import ReactMarkdown from "react-markdown";

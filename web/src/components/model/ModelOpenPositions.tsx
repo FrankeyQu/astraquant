@@ -2,7 +2,6 @@
 import clsx from "clsx";
 import { useMemo } from "react";
 import { usePositions } from "@/lib/api/hooks/usePositions";
-import { useAccountTotals } from "@/lib/api/hooks/useAccountTotals";
 import { fmtUSD, pnlClass } from "@/lib/utils/formatters";
 import { getModelName } from "@/lib/model/meta";
 import CoinIcon from "@/components/shared/CoinIcon";
@@ -26,7 +25,6 @@ function fmtNumber(n?: number | null, digits = 2) {
 
 export default function ModelOpenPositions({ modelId }: { modelId: string }) {
   const { positionsByModel } = usePositions();
-  const { data: totalsData } = useAccountTotals();
   const model = positionsByModel.find((m) => m.id === modelId);
   const positionsRaw = Object.values(model?.positions || {});
   const positions = useMemo(
