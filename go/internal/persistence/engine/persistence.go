@@ -21,6 +21,7 @@ import (
 
 	cachekeys "nof0-api/internal/cache"
 	"nof0-api/internal/model"
+	persistmetrics "nof0-api/internal/persistence/metrics"
 	persistresilience "nof0-api/internal/persistence/resilience"
 	"nof0-api/pkg/exchange"
 	executorpkg "nof0-api/pkg/executor"
@@ -966,6 +967,7 @@ func (s *Service) handleCacheFailure(ctx context.Context, operation, resource st
 	if classification.Class == persistresilience.FailureClassIgnore {
 		return
 	}
+	persistmetrics.RecordCacheOp(operation, persistmetrics.StatusError, 1)
 	if fields == nil {
 		fields = map[string]any{}
 	}
@@ -998,7 +1000,9 @@ func (s *Service) runCacheWrite(ctx context.Context, operation, resource string,
 	}
 	if err := write(ctx); err != nil {
 		s.handleCacheFailure(ctx, operation, resource, fields, err, write)
+		return
 	}
+	persistmetrics.RecordCacheOp(operation, persistmetrics.StatusOK, 1)
 }
 
 func (s *Service) cacheOpenPosition(ctx context.Context, modelID, symbol string, entry *positionCacheEntry) {
