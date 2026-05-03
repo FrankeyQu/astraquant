@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import LeaderboardTable from "@/components/leaderboard/LeaderboardTable";
 import { useState } from "react";
 import { useLeaderboard } from "@/lib/api/hooks/useLeaderboard";
+import type { AccountTotalsRow } from "@/lib/api/hooks/useAccountTotals";
 import { useAccountTotals } from "@/lib/api/hooks/useAccountTotals";
 import { usePositions } from "@/lib/api/hooks/usePositions";
 import { getModelName, getModelColor, getModelIcon } from "@/lib/model/meta";
@@ -32,8 +33,8 @@ export default function LeaderboardOverview({
 
   const { data: totalsData } = useAccountTotals();
   const latestByModel = useMemo(() => {
-    const map = new Map<string, any>();
-    const arr = (totalsData?.accountTotals ?? []) as any[];
+    const map = new Map<string, AccountTotalsRow>();
+    const arr = totalsData?.accountTotals ?? [];
     for (const r of arr) {
       const id = String(r.model_id || r.id || "");
       const ts = Number(r.timestamp || 0);
@@ -45,7 +46,7 @@ export default function LeaderboardOverview({
 
   const totalEquity = useMemo(() => {
     return latestByModel.reduce(
-      (sum, r: any) =>
+      (sum, r) =>
         sum + Number(r.equity || r.account_value || r.dollar_equity || 0),
       0,
     );
