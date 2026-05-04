@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nof0-api/internal/logic"
+	"nof0-api/internal/model"
 	"nof0-api/internal/svc"
 	"nof0-api/internal/types"
 	"nof0-api/pkg/confkit"
@@ -31,6 +32,7 @@ func TestDecisionApprovalControlWorkerSmoke(t *testing.T) {
 	svcCtx := &svc.ServiceContext{
 		ControlCommandRepo: &smokeControlRepo{store: store},
 		AuditEventRepo:     &smokeAuditRepo{store: store},
+		PositionsModel:     &smokePositionsModel{store: store},
 	}
 
 	decisionPayload := map[string]interface{}{
@@ -103,6 +105,39 @@ func TestDecisionApprovalControlWorkerSmoke(t *testing.T) {
 	require.Len(t, store.managerAudits, 2)
 	require.Equal(t, managerpkg.AuditEventApproved, store.managerAudits[0].Type)
 	require.Equal(t, managerpkg.AuditEventOrderSubmitted, store.managerAudits[1].Type)
+
+	ordersResp, err := logic.NewOrdersLogic(context.Background(), svcCtx).Orders(&types.OrdersRequest{
+		TraderId: "paper-smoke",
+		Status:   "submitted",
+	})
+	require.NoError(t, err)
+	require.Len(t, ordersResp.Orders, 1)
+	require.Equal(t, "paper-smoke", ordersResp.Orders[0].TraderId)
+	require.Equal(t, "BTC", ordersResp.Orders[0].Symbol)
+	require.Equal(t, "buy", ordersResp.Orders[0].Side)
+	require.Equal(t, "submitted", ordersResp.Orders[0].Status)
+	require.Equal(t, "limit_ioc", ordersResp.Orders[0].Type)
+	require.InDelta(t, 0.01, ordersResp.Orders[0].Quantity, 1e-9)
+	require.Equal(t, 50000.0, ordersResp.Orders[0].LimitPrice)
+
+	positionsResp, err := logic.NewPositionsLogic(context.Background(), svcCtx).Positions(&types.PositionsRequest{
+		TraderId: "paper-smoke",
+		Symbol:   "BTC",
+	})
+	require.NoError(t, err)
+	require.Len(t, positionsResp.AccountTotals, 1)
+	require.Equal(t, "paper-smoke", positionsResp.AccountTotals[0].ModelId)
+	position, ok := positionsResp.AccountTotals[0].Positions["BTC"]
+	require.True(t, ok)
+	require.NotZero(t, position.EntryOid)
+	require.Equal(t, "BTC", position.Symbol)
+	require.Equal(t, 50000.0, position.EntryPrice)
+	require.InDelta(t, 0.01, position.Quantity, 1e-9)
+	require.Equal(t, 3.0, position.Leverage)
+	require.Equal(t, 100.0, position.RiskUsd)
+	require.Equal(t, 0.88, position.Confidence)
+	require.Greater(t, position.Margin, 0.0)
+	require.Equal(t, 50000.0, position.CurrentPrice)
 }
 
 func newSmokeManager(t *testing.T, store *smokeStore, exch exchange.Provider, mkt market.Provider) *managerpkg.Manager {
@@ -267,6 +302,71 @@ func (p *smokeMarketProvider) ListAssets(context.Context) ([]market.Asset, error
 	}, nil
 }
 
+type smokePositionsModel struct {
+	store *smokeStore
+}
+
+func (m *smokePositionsModel) ActiveByModels(_ context.Context, modelIDs []string) (map[string][]model.PositionRecord, error) {
+	if m == nil || m.store == nil {
+		return map[string][]model.PositionRecord{}, nil
+	}
+	return m.store.listPositionRecords(modelIDs), nil
+}
+
+func (m *smokePositionsModel) FindOne(context.Context, string) (*model.Positions, error) {
+	return nil, model.ErrNotFound
+}
+
+func (m *smokePositionsModel) QueryRowsNoCacheCtx(context.Context, any, string, ...any) error {
+	return nil
+}
+
+func smokePositionRecordFromEvent(event managerpkg.PositionEvent) (model.PositionRecord, bool) {
+	traderID := strings.TrimSpace(event.TraderID)
+	if traderID == "" && event.Trader != nil {
+		traderID = strings.TrimSpace(event.Trader.ID)
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(event.Decision.Symbol))
+	if traderID == "" || symbol == "" {
+		return model.PositionRecord{}, false
+	}
+	price := event.FillPrice
+	if price <= 0 {
+		price = event.Decision.EntryPrice
+	}
+	qty := event.FillSize
+	if qty <= 0 && price > 0 && event.Decision.PositionSizeUSD > 0 {
+		qty = event.Decision.PositionSizeUSD / price
+	}
+	if qty < 0 {
+		qty = -qty
+	}
+	occurredAt := event.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	side := "long"
+	if strings.EqualFold(event.Decision.Action, "open_short") {
+		side = "short"
+	}
+	leverage := float64(event.Decision.Leverage)
+	confidence := float64(event.Decision.Confidence)
+	riskUSD := event.Decision.RiskUSD
+	return model.PositionRecord{
+		ID:          fmt.Sprintf("%s|%s", traderID, symbol),
+		TraderID:    traderID,
+		Symbol:      symbol,
+		Side:        side,
+		Status:      "open",
+		EntryTimeMs: occurredAt.UTC().UnixMilli(),
+		EntryPrice:  price,
+		Quantity:    qty,
+		Leverage:    &leverage,
+		Confidence:  &confidence,
+		RiskUsd:     &riskUSD,
+	}, true
+}
+
 type smokeStore struct {
 	mu            sync.Mutex
 	nextID        int64
@@ -277,13 +377,17 @@ type smokeStore struct {
 
 	repoAudits    []repo.AuditEventRecord
 	managerAudits []managerpkg.AuditEvent
+
+	positionEvents  []managerpkg.PositionEvent
+	positionRecords map[string]model.PositionRecord
 }
 
 func newSmokeStore() *smokeStore {
 	return &smokeStore{
-		commands:      make(map[string]repo.ControlCommandRecord),
-		idemIndex:     make(map[string]string),
-		statusHistory: make(map[string][]string),
+		commands:        make(map[string]repo.ControlCommandRecord),
+		idemIndex:       make(map[string]string),
+		statusHistory:   make(map[string][]string),
+		positionRecords: make(map[string]model.PositionRecord),
 	}
 }
 
@@ -291,10 +395,40 @@ func (s *smokeStore) RecordAuditEvent(_ context.Context, event managerpkg.AuditE
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.managerAudits = append(s.managerAudits, event)
+	s.appendRepoAuditLocked(repo.AuditEventRecord{
+		Type:            repo.AuditEventType(event.Type),
+		TraderID:        event.TraderID,
+		CycleID:         event.CycleID,
+		CorrelationID:   event.CorrelationID,
+		Symbol:          event.Symbol,
+		Action:          event.Action,
+		ModelID:         event.ModelID,
+		ModelName:       event.ModelName,
+		PromptDigest:    event.PromptDigest,
+		ApprovalTokenID: event.ApprovalTokenID,
+		Reason:          event.Reason,
+		Error:           event.Error,
+		Detail:          append(json.RawMessage(nil), event.Detail...),
+		CreatedAt:       event.CreatedAt,
+	})
 	return nil
 }
 
-func (s *smokeStore) RecordPositionEvent(context.Context, managerpkg.PositionEvent) error { return nil }
+func (s *smokeStore) RecordPositionEvent(_ context.Context, event managerpkg.PositionEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.positionEvents = append(s.positionEvents, event)
+	record, ok := smokePositionRecordFromEvent(event)
+	if !ok {
+		return nil
+	}
+	if event.Event == managerpkg.PositionEventClose {
+		delete(s.positionRecords, record.ID)
+		return nil
+	}
+	s.positionRecords[record.ID] = record
+	return nil
+}
 
 func (s *smokeStore) RecordDecisionCycle(context.Context, managerpkg.DecisionCycleRecord) error {
 	return nil
@@ -311,8 +445,18 @@ func (s *smokeStore) HydrateCaches(context.Context, []string) error { return nil
 func (s *smokeStore) recordRepoAudit(record repo.AuditEventRecord) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.appendRepoAuditLocked(record), nil
+}
+
+func (s *smokeStore) appendRepoAuditLocked(record repo.AuditEventRecord) int64 {
+	if record.ID == 0 {
+		record.ID = int64(len(s.repoAudits) + 1)
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
 	s.repoAudits = append(s.repoAudits, record)
-	return int64(len(s.repoAudits)), nil
+	return record.ID
 }
 
 func (s *smokeStore) listRepoAudits(filter repo.AuditEventListFilter) []repo.AuditEventRecord {
@@ -330,6 +474,31 @@ func (s *smokeStore) listRepoAudits(filter repo.AuditEventListFilter) []repo.Aud
 			continue
 		}
 		out = append(out, record)
+	}
+	return out
+}
+
+func (s *smokeStore) listPositionRecords(modelIDs []string) map[string][]model.PositionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	allowed := make(map[string]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if modelID = strings.TrimSpace(modelID); modelID != "" {
+			allowed[modelID] = struct{}{}
+		}
+	}
+	out := make(map[string][]model.PositionRecord)
+	for _, record := range s.positionRecords {
+		if record.Status != "" && record.Status != "open" {
+			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[record.TraderID]; !ok {
+				continue
+			}
+		}
+		out[record.TraderID] = append(out[record.TraderID], record)
 	}
 	return out
 }
