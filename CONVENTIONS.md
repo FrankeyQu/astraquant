@@ -133,6 +133,7 @@ Domain：
 最低要求：
 
 - Go 改动必须跑相关包测试。
+- 后端或 CI 覆盖面改动建议跑 `make test-ci`，该 target 使用 `CGO_ENABLED=0 go test ./...` 覆盖全部 Go 包。
 - manager/policy 改动必须跑：
   - `go test ./pkg/manager`
   - `go test ./pkg/executor ./pkg/manager ./pkg/exchange/sim`

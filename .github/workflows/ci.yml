@@ -73,7 +73,7 @@ jobs:
         run: npm run build
 
   go-core:
-    name: Go core tests
+    name: Go full test suite
     runs-on: ubuntu-latest
     needs:
       - secret-scan
@@ -93,8 +93,5 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Test core packages
-        run: go test ./pkg/executor ./pkg/manager ./pkg/exchange/sim
-
-      - name: Compile persistence packages
-        run: go test ./internal/model ./internal/persistence/engine ./internal/persistence/market ./pkg/repo
+      - name: Run full CI-safe test suite
+        run: make test-ci
