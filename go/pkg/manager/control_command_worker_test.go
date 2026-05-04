@@ -22,14 +22,7 @@ func TestControlCommandWorkerExecutesDecisionThroughPolicyGateway(t *testing.T) 
 		persistence:    audit,
 	}
 	commands := &fakeWorkerCommandRepo{
-		claimed: []repo.ControlCommandRecord{workerDecisionCommand(t, trader.ID, executorpkg.Decision{
-			Symbol:          "BTC",
-			Action:          "open_long",
-			PositionSizeUSD: 500,
-			EntryPrice:      50_000,
-			Leverage:        2,
-			Confidence:      90,
-		})},
+		claimed: []repo.ControlCommandRecord{workerDecisionCommand(t, trader.ID, validLongDecision("BTC", 50_000, 500))},
 	}
 
 	result, err := NewControlCommandWorker(manager, commands).ProcessOnce(context.Background())
@@ -55,14 +48,7 @@ func TestControlCommandWorkerFailsOversizeBeforeExchange(t *testing.T) {
 		persistence:    audit,
 	}
 	commands := &fakeWorkerCommandRepo{
-		claimed: []repo.ControlCommandRecord{workerDecisionCommand(t, trader.ID, executorpkg.Decision{
-			Symbol:          "BTC",
-			Action:          "open_long",
-			PositionSizeUSD: 500,
-			EntryPrice:      50_000,
-			Leverage:        2,
-			Confidence:      90,
-		})},
+		claimed: []repo.ControlCommandRecord{workerDecisionCommand(t, trader.ID, validLongDecision("BTC", 50_000, 500))},
 	}
 
 	result, err := NewControlCommandWorker(manager, commands).ProcessOnce(context.Background())

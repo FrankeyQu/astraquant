@@ -52,7 +52,7 @@ Trader lifecycle responses share the shape:
 
 Decision and order approve/reject endpoints enqueue control-plane commands and record an audit event when `AuditEventRepo` is available. When the database is configured, commands are persisted in `control_commands`; otherwise the API falls back to the in-memory command queue. They do **not** submit orders, do **not** execute persisted decisions, and do **not** bypass `manager.ApproveDecision`. `idempotency_key` reuses the same queued command for the same target/action/key combination.
 
-Decision approval requests must include a complete `decision` object using snake_case fields such as `symbol`, `action`, `leverage`, `position_size_usd`, `entry_price`, `stop_loss`, `take_profit`, `risk_usd`, `confidence`, `reasoning`, and `invalidation_condition`. The API normalizes that payload into `control_commands.detail.decision` so the guarded worker can replay it through `Manager.ExecuteDecision`.
+Decision approval requests must include a complete `decision` object using snake_case fields such as `symbol`, `action`, `leverage`, `position_size_usd`, `entry_price`, `stop_loss`, `take_profit`, `risk_usd`, `confidence`, `reasoning`, and `invalidation_condition`. The API normalizes that payload into `control_commands.detail.decision` so the guarded worker can replay it through `Manager.ExecuteDecision`. Manager policy then revalidates entry/stop/take-profit direction, reward/risk floor, account sync, asset resolution, leverage update, and exchange response status before any local position is booked.
 
 Decision and order action responses share this safe command shape:
 

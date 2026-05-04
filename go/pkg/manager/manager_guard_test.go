@@ -127,14 +127,8 @@ func TestPolicyGatewayRejectsOversizeBeforeExchange(t *testing.T) {
 		persistence:    &auditRecordingPersistence{},
 	}
 
-	err := m.ExecuteDecision(trader, &executorpkg.Decision{
-		Symbol:          "BTC",
-		Action:          "open_long",
-		PositionSizeUSD: 500,
-		EntryPrice:      50_000,
-		Leverage:        2,
-		Confidence:      90,
-	})
+	decision := validLongDecision("BTC", 50_000, 500)
+	err := m.ExecuteDecision(trader, &decision)
 
 	require.ErrorContains(t, err, "manager policy")
 	require.Zero(t, ex.placeOrders, "policy rejection must happen before exchange submission")
@@ -151,14 +145,8 @@ func TestPolicyGatewayApprovesAndExecutesValidDecision(t *testing.T) {
 		persistence:    audit,
 	}
 
-	err := m.ExecuteDecision(trader, &executorpkg.Decision{
-		Symbol:          "BTC",
-		Action:          "open_long",
-		PositionSizeUSD: 500,
-		EntryPrice:      50_000,
-		Leverage:        2,
-		Confidence:      90,
-	})
+	decision := validLongDecision("BTC", 50_000, 500)
+	err := m.ExecuteDecision(trader, &decision)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, ex.placeOrders)
@@ -178,14 +166,8 @@ func TestPolicyGatewayRejectsLiveModeWithoutExplicitAck(t *testing.T) {
 		positionOwners: make(map[string]string),
 	}
 
-	err := m.ExecuteDecision(trader, &executorpkg.Decision{
-		Symbol:          "BTC",
-		Action:          "open_long",
-		PositionSizeUSD: 500,
-		EntryPrice:      50_000,
-		Leverage:        2,
-		Confidence:      90,
-	})
+	decision := validLongDecision("BTC", 50_000, 500)
+	err := m.ExecuteDecision(trader, &decision)
 
 	require.ErrorContains(t, err, "live trading")
 	require.Zero(t, ex.placeOrders, "live gate rejection must happen before exchange submission")
@@ -201,14 +183,8 @@ func TestPolicyGatewayRejectsPaperModeOnNonPaperProvider(t *testing.T) {
 		positionOwners: make(map[string]string),
 	}
 
-	err := m.ExecuteDecision(trader, &executorpkg.Decision{
-		Symbol:          "BTC",
-		Action:          "open_long",
-		PositionSizeUSD: 500,
-		EntryPrice:      50_000,
-		Leverage:        2,
-		Confidence:      90,
-	})
+	decision := validLongDecision("BTC", 50_000, 500)
+	err := m.ExecuteDecision(trader, &decision)
 
 	require.ErrorContains(t, err, "execution_mode=paper")
 	require.Zero(t, ex.placeOrders, "paper mode must not submit through a non-paper provider")
@@ -224,18 +200,111 @@ func TestPolicyGatewayRejectsSymbolOutsideWhitelist(t *testing.T) {
 		persistence:    &auditRecordingPersistence{},
 	}
 
-	err := m.ExecuteDecision(trader, &executorpkg.Decision{
-		Symbol:          "ETH",
-		Action:          "open_long",
-		PositionSizeUSD: 500,
-		EntryPrice:      3_000,
-		Leverage:        2,
-		Confidence:      90,
-	})
+	decision := validLongDecision("ETH", 3_000, 500)
+	err := m.ExecuteDecision(trader, &decision)
 
 	require.ErrorContains(t, err, "allowed_symbols")
 	require.Zero(t, ex.placeOrders, "symbol whitelist rejection must happen before exchange submission")
 	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestPolicyGatewayRejectsInvalidPriceGuardsBeforeExchange(t *testing.T) {
+	ex := &countingExchangeProvider{}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
+	}
+	decision := validLongDecision("BTC", 50_000, 500)
+	decision.StopLoss = 51_000
+
+	err := m.ExecuteDecision(trader, &decision)
+
+	require.ErrorContains(t, err, "stop_loss")
+	require.Zero(t, ex.placeOrders, "invalid SL/TP relationship must not reach exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestPreSubmitBlocksAccountSyncFailureBeforeExchange(t *testing.T) {
+	ex := &countingExchangeProvider{accountErr: errors.New("account unavailable")}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
+	}
+	decision := validLongDecision("BTC", 50_000, 500)
+
+	err := m.ExecuteDecision(trader, &decision)
+
+	require.ErrorContains(t, err, "sync trader")
+	require.Zero(t, ex.placeOrders, "account sync failure must fail closed before exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventApproved)
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestPreSubmitBlocksAssetResolutionFailureBeforeExchange(t *testing.T) {
+	ex := &countingExchangeProvider{assetIndexErr: errors.New("asset lookup unavailable")}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
+	}
+	decision := validLongDecision("BTC", 50_000, 500)
+
+	err := m.ExecuteDecision(trader, &decision)
+
+	require.ErrorContains(t, err, "resolve asset index")
+	require.Zero(t, ex.placeOrders, "asset resolution failure must fail closed before exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestPreSubmitBlocksLeverageUpdateFailureBeforeExchange(t *testing.T) {
+	ex := &countingExchangeProvider{updateLeverageErr: errors.New("leverage rejected")}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    &auditRecordingPersistence{},
+	}
+	decision := validLongDecision("BTC", 50_000, 500)
+
+	err := m.ExecuteDecision(trader, &decision)
+
+	require.ErrorContains(t, err, "update leverage")
+	require.Zero(t, ex.placeOrders, "leverage update failure must fail closed before exchange submission")
+	requireAuditEvent(t, m.persistence.(*auditRecordingPersistence).events, AuditEventPolicyRejected)
+}
+
+func TestOrderResponseErrorDoesNotAssignVirtualPosition(t *testing.T) {
+	ex := &countingExchangeProvider{
+		orderResp: &exchange.OrderResponse{
+			Status: "ok",
+			Response: exchange.OrderResponseData{
+				Type: "order",
+				Data: exchange.OrderResponseDataDetail{
+					Statuses: []exchange.OrderStatusResponse{{Error: "insufficient margin"}},
+				},
+			},
+		},
+	}
+	trader := testPolicyTrader(ex, &staticMarketProvider{})
+	audit := &auditRecordingPersistence{}
+	m := &Manager{
+		traders:        map[string]*VirtualTrader{trader.ID: trader},
+		positionOwners: make(map[string]string),
+		persistence:    audit,
+	}
+	decision := validLongDecision("BTC", 50_000, 500)
+
+	err := m.ExecuteDecision(trader, &decision)
+
+	require.ErrorContains(t, err, "rejected by exchange response")
+	require.Equal(t, 1, ex.placeOrders, "exchange was called but explicit response error must stop local booking")
+	require.Equal(t, "", m.getPositionOwner("BTC"))
+	requireAuditEvent(t, audit.events, AuditEventOrderFailed)
 }
 
 func TestPreSubmitRiskRejectsDailyLossAfterAccountSync(t *testing.T) {
@@ -257,14 +326,8 @@ func TestPreSubmitRiskRejectsDailyLossAfterAccountSync(t *testing.T) {
 		runtimeRepo:    runtimeRepo,
 	}
 
-	err := m.ExecuteDecision(trader, &executorpkg.Decision{
-		Symbol:          "BTC",
-		Action:          "open_long",
-		PositionSizeUSD: 500,
-		EntryPrice:      50_000,
-		Leverage:        2,
-		Confidence:      90,
-	})
+	decision := validLongDecision("BTC", 50_000, 500)
+	err := m.ExecuteDecision(trader, &decision)
 
 	require.ErrorContains(t, err, "daily loss")
 	require.Zero(t, ex.placeOrders, "daily loss rejection must happen before exchange submission")
@@ -357,13 +420,20 @@ func (e *validationErrorExecutor) GetConfig() *executorpkg.Config {
 }
 
 type countingExchangeProvider struct {
-	placeOrders  int
-	accountValue float64
-	marginUsed   float64
+	placeOrders       int
+	accountValue      float64
+	marginUsed        float64
+	accountErr        error
+	assetIndexErr     error
+	updateLeverageErr error
+	orderResp         *exchange.OrderResponse
 }
 
 func (p *countingExchangeProvider) PlaceOrder(context.Context, exchange.Order) (*exchange.OrderResponse, error) {
 	p.placeOrders++
+	if p.orderResp != nil {
+		return p.orderResp, nil
+	}
 	return &exchange.OrderResponse{Status: "ok"}, nil
 }
 
@@ -382,10 +452,13 @@ func (p *countingExchangeProvider) ClosePosition(context.Context, string) (*exch
 }
 
 func (p *countingExchangeProvider) UpdateLeverage(context.Context, int, bool, int) error {
-	return nil
+	return p.updateLeverageErr
 }
 
 func (p *countingExchangeProvider) GetAccountState(context.Context) (*exchange.AccountState, error) {
+	if p.accountErr != nil {
+		return nil, p.accountErr
+	}
 	accountValue := p.accountValue
 	if accountValue <= 0 {
 		accountValue = 10000
@@ -406,6 +479,9 @@ func (p *countingExchangeProvider) GetAccountValue(context.Context) (float64, er
 }
 
 func (p *countingExchangeProvider) GetAssetIndex(context.Context, string) (int, error) {
+	if p.assetIndexErr != nil {
+		return 0, p.assetIndexErr
+	}
 	return 0, nil
 }
 
@@ -432,12 +508,28 @@ func testPolicyTrader(ex exchange.Provider, mkt market.Provider) *VirtualTrader 
 			MaxMarginUsagePct:  80,
 			MajorCoinLeverage:  5,
 			AltcoinLeverage:    3,
+			MinRiskRewardRatio: 2,
 			MinConfidence:      50,
+			StopLossEnabled:    true,
+			TakeProfitEnabled:  true,
 		},
 		ResourceAlloc:    ResourceAllocation{CurrentEquityUSD: 10_000},
 		State:            TraderStateRunning,
 		VirtualPositions: make(map[string]VirtualPosition),
 		Cooldown:         make(map[string]time.Time),
+	}
+}
+
+func validLongDecision(symbol string, entryPrice, notionalUSD float64) executorpkg.Decision {
+	return executorpkg.Decision{
+		Symbol:          symbol,
+		Action:          "open_long",
+		PositionSizeUSD: notionalUSD,
+		EntryPrice:      entryPrice,
+		StopLoss:        entryPrice * 0.98,
+		TakeProfit:      entryPrice * 1.06,
+		Leverage:        2,
+		Confidence:      90,
 	}
 }
 
