@@ -21,10 +21,16 @@ DROP INDEX IF EXISTS idx_conversation_messages_conversation_id;
 
 ALTER TABLE IF EXISTS conversation_messages
     ALTER COLUMN conversation_id TYPE TEXT USING conversation_id::TEXT,
-    ALTER COLUMN conversation_id SET NOT NULL,
     DROP COLUMN IF EXISTS metadata,
     DROP COLUMN IF EXISTS ts_ms,
     DROP COLUMN IF EXISTS content;
+
+UPDATE conversation_messages
+SET conversation_id = id::TEXT
+WHERE conversation_id IS NULL;
+
+ALTER TABLE IF EXISTS conversation_messages
+    ALTER COLUMN conversation_id SET NOT NULL;
 
 DROP TABLE IF EXISTS conversations CASCADE;
 
