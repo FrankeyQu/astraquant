@@ -85,6 +85,9 @@ func (m *Manager) ApproveDecision(trader *VirtualTrader, decision *executorpkg.D
 		if decision.PositionSizeUSD <= 0 {
 			return nil, errors.New("manager policy: open action requires positive position size")
 		}
+		if err := enforceOpenDecisionPriceGuards(trader.RiskParams, decision); err != nil {
+			return nil, fmt.Errorf("manager policy: %w", err)
+		}
 		if trader.RiskParams.MinConfidence > 0 && decision.Confidence < trader.RiskParams.MinConfidence {
 			return nil, fmt.Errorf("manager policy: confidence %d below minimum %d", decision.Confidence, trader.RiskParams.MinConfidence)
 		}
@@ -111,7 +114,7 @@ func (m *Manager) ApproveDecision(trader *VirtualTrader, decision *executorpkg.D
 		if err := m.enforceOpenRisk(trader, decision, lev); err != nil {
 			return nil, fmt.Errorf("manager policy: %w", err)
 		}
-		checks = append(checks, "confidence_floor", "symbol_whitelist", "size_cap", "leverage_cap", "daily_loss_limit", "symbol_ownership", "position_count", "margin_cap")
+		checks = append(checks, "entry_price", "stop_loss", "take_profit", "risk_reward", "confidence_floor", "symbol_whitelist", "size_cap", "leverage_cap", "daily_loss_limit", "symbol_ownership", "position_count", "margin_cap")
 	}
 	if isClose {
 		if err := m.ensureCloseOwnership(trader, symbol); err != nil {
@@ -135,6 +138,69 @@ func (m *Manager) ApproveDecision(trader *VirtualTrader, decision *executorpkg.D
 		ExpiresAt:   now.Add(approvalTokenTTL),
 		Checks:      checks,
 	}, nil
+}
+
+func enforceOpenDecisionPriceGuards(params RiskParameters, decision *executorpkg.Decision) error {
+	if decision == nil {
+		return errors.New("decision is required")
+	}
+	action := strings.TrimSpace(decision.Action)
+	if decision.EntryPrice <= 0 {
+		return errors.New("open action requires positive entry_price")
+	}
+	if params.StopLossEnabled && decision.StopLoss <= 0 {
+		return errors.New("open action requires positive stop_loss")
+	}
+	if params.TakeProfitEnabled && decision.TakeProfit <= 0 {
+		return errors.New("open action requires positive take_profit")
+	}
+	if decision.StopLoss > 0 {
+		switch action {
+		case "open_long":
+			if decision.StopLoss >= decision.EntryPrice {
+				return errors.New("open_long requires stop_loss below entry_price")
+			}
+		case "open_short":
+			if decision.StopLoss <= decision.EntryPrice {
+				return errors.New("open_short requires stop_loss above entry_price")
+			}
+		}
+	}
+	if decision.TakeProfit > 0 {
+		switch action {
+		case "open_long":
+			if decision.TakeProfit <= decision.EntryPrice {
+				return errors.New("open_long requires take_profit above entry_price")
+			}
+		case "open_short":
+			if decision.TakeProfit >= decision.EntryPrice {
+				return errors.New("open_short requires take_profit below entry_price")
+			}
+		}
+	}
+	if params.MinRiskRewardRatio > 0 {
+		if decision.StopLoss <= 0 || decision.TakeProfit <= 0 {
+			return errors.New("min_risk_reward_ratio requires stop_loss and take_profit")
+		}
+		risk := 0.0
+		reward := 0.0
+		switch action {
+		case "open_long":
+			risk = decision.EntryPrice - decision.StopLoss
+			reward = decision.TakeProfit - decision.EntryPrice
+		case "open_short":
+			risk = decision.StopLoss - decision.EntryPrice
+			reward = decision.EntryPrice - decision.TakeProfit
+		}
+		if risk <= 0 || reward <= 0 {
+			return errors.New("invalid entry_price/stop_loss/take_profit relationship")
+		}
+		ratio := reward / risk
+		if ratio+1e-9 < params.MinRiskRewardRatio {
+			return fmt.Errorf("reward/risk %.2f below minimum %.2f", ratio, params.MinRiskRewardRatio)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) enforceExecutionMode(trader *VirtualTrader) error {

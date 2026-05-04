@@ -756,7 +756,11 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 			return err
 		}
 		if err := m.SyncTraderPositions(trader.ID); err != nil {
-			logx.Errorf("manager: sync trader %s before execution failed: %v", trader.ID, err)
+			wrapped := fmt.Errorf("manager: sync trader %s before execution: %w", trader.ID, err)
+			m.recordAuditDecisionEvent(AuditEventPolicyRejected, trader, decision, trace, approval, "pre_submit_account_sync_failed", wrapped, map[string]any{
+				"checks": approval.Checks,
+			})
+			return wrapped
 		}
 		if err := m.ensureSymbolAvailable(trader, decision.Symbol); err != nil {
 			return err
@@ -794,6 +798,12 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 		if err != nil {
 			m.recordOrderFailed(trader, decision, trace, approval, "close_position", err, nil)
 			return err
+		}
+		if err := orderResponseFailure(orderResp); err != nil {
+			m.recordOrderFailed(trader, decision, trace, approval, "close_position_response_rejected", err, map[string]any{
+				"response": summarizeOrderResponse(orderResp),
+			})
+			return fmt.Errorf("manager: close position %s rejected by exchange response: %w", decision.Symbol, err)
 		}
 		m.recordOrderSubmitted(trader, decision, trace, approval, "close_position", map[string]any{
 			"response": summarizeOrderResponse(orderResp),
@@ -867,8 +877,23 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	assetIdx, err := trader.ExchangeProvider.GetAssetIndex(ctx, decision.Symbol)
-	if err == nil && lev > 0 {
-		_ = trader.ExchangeProvider.UpdateLeverage(ctx, assetIdx, true, lev)
+	if err != nil {
+		wrapped := fmt.Errorf("manager: resolve asset index for %s: %w", decision.Symbol, err)
+		m.recordAuditDecisionEvent(AuditEventPolicyRejected, trader, decision, trace, approval, "pre_submit_asset_resolution_failed", wrapped, map[string]any{
+			"checks": approval.Checks,
+		})
+		return wrapped
+	}
+	if lev > 0 {
+		if err := trader.ExchangeProvider.UpdateLeverage(ctx, assetIdx, true, lev); err != nil {
+			wrapped := fmt.Errorf("manager: update leverage for %s asset=%d leverage=%d: %w", decision.Symbol, assetIdx, lev, err)
+			m.recordAuditDecisionEvent(AuditEventPolicyRejected, trader, decision, trace, approval, "pre_submit_leverage_update_failed", wrapped, map[string]any{
+				"asset":    assetIdx,
+				"checks":   approval.Checks,
+				"leverage": lev,
+			})
+			return wrapped
+		}
 	}
 
 	// Determine price: use decision price or query market snapshot.
@@ -927,6 +952,15 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 			})
 			return fmt.Errorf("manager: market_ioc order %s %s: %w", decision.Symbol, decision.Action, err)
 		}
+		if err := orderResponseFailure(resp); err != nil {
+			m.recordOrderFailed(trader, decision, trace, approval, "market_ioc_response_rejected", err, map[string]any{
+				"price":        price,
+				"quantity":     qty,
+				"slippage_bps": trader.MarketIOCSlippageBps,
+				"response":     summarizeOrderResponse(resp),
+			})
+			return fmt.Errorf("manager: market_ioc order %s %s rejected by exchange response: %w", decision.Symbol, decision.Action, err)
+		}
 		orderResp = resp
 		summary := summarizeOrderResponse(resp)
 		m.recordOrderSubmitted(trader, decision, trace, approval, "market_ioc", map[string]any{
@@ -980,6 +1014,17 @@ func (m *Manager) executeDecisionWithApproval(trader *VirtualTrader, decision *e
 				"reduce_only": false,
 			})
 			return fmt.Errorf("manager: place order %s %s: %w", decision.Symbol, decision.Action, err)
+		}
+		if err := orderResponseFailure(resp); err != nil {
+			m.recordOrderFailed(trader, decision, trace, approval, "limit_ioc_response_rejected", err, map[string]any{
+				"asset":       assetIdx,
+				"price":       priceStr,
+				"quantity":    sizeStr,
+				"cloid":       cloid,
+				"reduce_only": false,
+				"response":    summarizeOrderResponse(resp),
+			})
+			return fmt.Errorf("manager: place order %s %s rejected by exchange response: %w", decision.Symbol, decision.Action, err)
 		}
 		orderResp = resp
 		summary := summarizeOrderResponse(resp)
@@ -1344,6 +1389,25 @@ func summarizeOrderResponse(resp *exchange.OrderResponse) string {
 		return summary
 	}
 	return fmt.Sprintf("status=%s %s", status, summary)
+}
+
+func orderResponseFailure(resp *exchange.OrderResponse) error {
+	if resp == nil {
+		return errors.New("empty exchange order response")
+	}
+	status := strings.ToLower(strings.TrimSpace(resp.Status))
+	if status != "" && status != "ok" && status != "success" {
+		if strings.TrimSpace(resp.ErrorMessage) != "" {
+			return fmt.Errorf("exchange response status %q: %s", resp.Status, resp.ErrorMessage)
+		}
+		return fmt.Errorf("exchange response status %q", resp.Status)
+	}
+	for i, st := range resp.Response.Data.Statuses {
+		if msg := strings.TrimSpace(st.Error); msg != "" {
+			return fmt.Errorf("exchange response status[%d] error: %s", i, msg)
+		}
+	}
+	return nil
 }
 
 func parseOrderFill(resp *exchange.OrderResponse) (price float64, qty float64, ok bool) {

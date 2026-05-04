@@ -17,16 +17,23 @@ Configured per trader under `risk_params`:
 | `max_daily_loss_pct` | Maximum UTC-day equity loss as a percentage of the daily starting equity. |
 | `max_positions` | Maximum number of open virtual positions for the trader. |
 | `min_confidence` | Minimum AI confidence accepted for new opens. |
+| `min_risk_reward_ratio` | Minimum reward/risk ratio derived from `entry_price`, `stop_loss`, and `take_profit`. |
+| `stop_loss_enabled` | Requires positive `stop_loss` for new opens when enabled. |
+| `take_profit_enabled` | Requires positive `take_profit` for new opens when enabled. |
 
 When both `max_daily_loss_usd` and `max_daily_loss_pct` are set, the stricter positive limit is used.
 
 ## Enforcement Points
 
 1. `ApproveDecision` validates the AI intent and creates a short-lived approval token.
-2. `executeDecisionWithApproval` syncs account state before opening a position.
+2. `executeDecisionWithApproval` syncs account state before opening a position and fails closed if sync or reconciliation fails.
 3. The manager re-runs hard open-risk checks after account sync and before any exchange submission.
+4. Asset resolution and leverage update must succeed before any opening order is submitted.
+5. Explicit exchange response errors are treated as order failures and do not create local virtual positions.
 
 This second check prevents stale approval from bypassing daily loss, margin, or size limits after account state changes.
+
+For new opens, Manager policy validates that `entry_price` is positive, enabled stop-loss/take-profit fields are positive, the stop/take-profit side matches the requested long/short direction, and the configured reward/risk floor is met. This applies to decisions replayed from the control-command worker as well as decisions produced by the executor loop.
 
 ## Daily Loss State And Circuit Breaker
 
