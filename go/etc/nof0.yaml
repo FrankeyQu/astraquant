@@ -20,7 +20,9 @@ Cache:
   - Host: "${Cache__0__Host}"
     Type: node
     Pass: "${Cache__0__Pass}"
-    Tls: ${Cache__0__Tls}
+    # Keep the default literal so the API can start without Redis env vars.
+    # Use a separate deployment config if Redis TLS is required.
+    Tls: false
     Weight: 100
 
 TTL:
