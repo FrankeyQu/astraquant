@@ -20,6 +20,8 @@ ALTER TABLE IF EXISTS decision_cycles
 DROP INDEX IF EXISTS idx_conversation_messages_conversation_id;
 
 ALTER TABLE IF EXISTS conversation_messages
+    ALTER COLUMN conversation_id TYPE TEXT USING conversation_id::TEXT,
+    ALTER COLUMN conversation_id SET NOT NULL,
     DROP COLUMN IF EXISTS metadata,
     DROP COLUMN IF EXISTS ts_ms,
     DROP COLUMN IF EXISTS content;
