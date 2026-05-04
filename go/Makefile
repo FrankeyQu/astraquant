@@ -2,7 +2,7 @@
 	docker-up docker-down docker-reset docker-logs docker-ps \
 	db-local-migrate db-local-reset db-local-status \
 	migrate-up migrate-down migrate-create migrate-status migrate-force model-gen \
-	test test-unit test-integration test-all test-bench test-cover test-race test-storage \
+	test test-ci test-unit test-integration test-all test-bench test-cover test-race test-storage \
 	run-llm run-llm-fast \
 	lint fmt check check-all install
 
@@ -135,6 +135,9 @@ model-gen: .check-postgres-dsn ## Regenerate Go models from database schema
 # =============================================================================
 test: ## Run basic Go tests
 	go test -v ./...
+
+test-ci: ## Run the full CI-safe Go test suite without CGO
+	CGO_ENABLED=0 go test ./...
 
 test-unit: ## Run unit tests using Python test script
 	python $(TEST_SCRIPT) unit

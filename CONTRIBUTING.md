@@ -33,14 +33,14 @@ For backend-adjacent changes:
 
 ```bash
 cd go
-make test
+make test-ci
 ```
 
 For DevEx changes:
 
 ```bash
 cd go
-make -n build test docker-up docker-down docker-ps
+make -n build test test-ci docker-up docker-down docker-ps
 docker compose -f docker-compose.yml config
 ```
 

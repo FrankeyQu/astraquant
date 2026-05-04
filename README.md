@@ -67,8 +67,8 @@ Run these before handing off a change:
 
 ```bash
 cd go
-make test
-make -n build test docker-up docker-down docker-ps
+make test-ci
+make -n build test test-ci docker-up docker-down docker-ps
 docker compose -f docker-compose.yml config
 
 cd ../web
