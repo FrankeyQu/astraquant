@@ -56,7 +56,25 @@ func main() {
 		log.Printf("skip since-inception: design expects timeseries; source has summary only")
 	}
 
-	// 3) Trades -> trades (+models, +symbols)
+	// 3) Account totals -> account_equity_snapshots
+	if resp, err := dl.LoadAccountTotals(); err == nil {
+		imported := 0
+		for _, total := range resp.AccountTotals {
+			modelID := strings.TrimSpace(total.ModelId)
+			if modelID == "" {
+				continue
+			}
+			modelSet[modelID] = struct{}{}
+			upsertModel(ctx, conn, modelID, modelID)
+			insertEquitySnapshot(ctx, conn, &total)
+			imported++
+		}
+		log.Printf("imported account totals: %d", imported)
+	} else {
+		log.Printf("skip account totals: %v", err)
+	}
+
+	// 4) Trades -> trades (+models, +symbols)
 	if resp, err := dl.LoadTrades(); err == nil {
 		for _, t := range resp.Trades {
 			if t.ModelId != "" {
@@ -76,7 +94,7 @@ func main() {
 		log.Printf("skip trades: %v", err)
 	}
 
-	// 4) Positions -> positions (open)
+	// 5) Positions -> positions (open)
 	if resp, err := dl.LoadPositions(); err == nil {
 		for _, pm := range resp.AccountTotals {
 			if pm.ModelId != "" {
@@ -87,7 +105,14 @@ func main() {
 				symbolSet[sym] = struct{}{}
 				upsertSymbol(ctx, conn, sym)
 				entryMs := toMsF(pos.EntryTime)
-				pv := positionView{EntryPrice: pos.EntryPrice, Quantity: pos.Quantity, Leverage: pos.Leverage, Confidence: pos.Confidence}
+				pv := positionView{
+					EntryPrice:    pos.EntryPrice,
+					Quantity:      pos.Quantity,
+					Leverage:      pos.Leverage,
+					Confidence:    pos.Confidence,
+					RiskUsd:       pos.RiskUsd,
+					UnrealizedPnl: pos.UnrealizedPnl,
+				}
 				insertPositionOpen(ctx, conn, pm.ModelId, sym, pv, entryMs)
 			}
 		}
@@ -96,7 +121,7 @@ func main() {
 		log.Printf("skip positions: %v", err)
 	}
 
-	// 5) Analytics -> model_analytics payload cache
+	// 6) Analytics -> model_analytics payload cache
 	if resp, err := dl.LoadAnalytics(); err == nil {
 		imported := 0
 		for _, analytics := range resp.Analytics {
@@ -121,7 +146,7 @@ func main() {
 		log.Printf("skip analytics: %v", err)
 	}
 
-	// 6) Conversations -> conversations & messages
+	// 7) Conversations -> conversations & messages
 	if resp, err := dl.LoadConversations(); err == nil {
 		for _, c := range resp.Conversations {
 			if c.ModelId != "" {
@@ -188,31 +213,88 @@ func mustExec(ctx context.Context, conn sqlx.SqlConn, query string, args ...inte
 }
 
 func upsertModel(ctx context.Context, conn sqlx.SqlConn, id, display string) {
-	q := `INSERT INTO models(id, display_name) VALUES ($1,$2)
-          ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name`
-	mustExec(ctx, conn, q, strings.TrimSpace(id), display)
+	q := `INSERT INTO models(id, provider, name, detail)
+          VALUES ($1, 'snapshot', $2, '{}'::jsonb)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            provider = EXCLUDED.provider`
+	mustExec(ctx, conn, q, strings.TrimSpace(id), strings.TrimSpace(display))
 }
 
 func upsertSymbol(ctx context.Context, conn sqlx.SqlConn, symbol string) {
-	q := `INSERT INTO symbols(symbol) VALUES ($1) ON CONFLICT (symbol) DO NOTHING`
-	mustExec(ctx, conn, q, strings.TrimSpace(symbol))
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return
+	}
+	q := `INSERT INTO symbols(id, exchange_provider, symbol)
+          VALUES ($1, 'snapshot', $2)
+          ON CONFLICT (exchange_provider, symbol) DO NOTHING`
+	mustExec(ctx, conn, q, "snapshot/"+symbol, symbol)
 }
 
-func insertEquitySnapshot(ctx context.Context, conn sqlx.SqlConn, modelId string, ts int64, equity float64) {
-	q := `INSERT INTO account_equity_snapshots(model_id, ts_ms, equity_usd) VALUES ($1,$2,$3)`
-	mustExec(ctx, conn, q, modelId, ts, equity)
+func insertEquitySnapshot(ctx context.Context, conn sqlx.SqlConn, total *types.AccountTotal) {
+	if total == nil || strings.TrimSpace(total.ModelId) == "" {
+		return
+	}
+	metadata := map[string]any{
+		"source":           "mcp_snapshot",
+		"account_total_id": total.Id,
+		"positions_count":  len(total.Positions),
+	}
+	metaJSON, err := json.Marshal(metadata)
+	if err != nil {
+		log.Fatalf("marshal account snapshot metadata: %v", err)
+	}
+	q := `INSERT INTO account_equity_snapshots(
+            model_id, ts_ms, dollar_equity, realized_pnl, total_unrealized_pnl,
+            metadata, cum_pnl_pct, sharpe_ratio, since_inception_hourly_marker,
+            since_inception_minute_marker)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10)
+          ON CONFLICT (model_id, ts_ms) DO UPDATE SET
+            dollar_equity = EXCLUDED.dollar_equity,
+            realized_pnl = EXCLUDED.realized_pnl,
+            total_unrealized_pnl = EXCLUDED.total_unrealized_pnl,
+            metadata = EXCLUDED.metadata,
+            cum_pnl_pct = EXCLUDED.cum_pnl_pct,
+            sharpe_ratio = EXCLUDED.sharpe_ratio,
+            since_inception_hourly_marker = EXCLUDED.since_inception_hourly_marker,
+            since_inception_minute_marker = EXCLUDED.since_inception_minute_marker`
+	mustExec(ctx, conn, q,
+		strings.TrimSpace(total.ModelId),
+		toMsF(total.Timestamp),
+		total.DollarEquity,
+		total.RealizedPnl,
+		total.TotalUnrealizedPnl,
+		string(metaJSON),
+		total.CumPnlPct,
+		total.SharpeRatio,
+		total.SinceInceptionHourlyMarker,
+		total.SinceInceptionMinuteMarker,
+	)
 }
 
 func insertTrade(ctx context.Context, conn sqlx.SqlConn, t *types.Trade, entryMs, exitMs int64) {
-	q := `INSERT INTO trades(
-            id, model_id, symbol, side, trade_type, quantity, leverage, confidence,
-            entry_price, entry_ts_ms, exit_price, exit_ts_ms,
-            realized_gross_pnl, realized_net_pnl, total_commission_dollars)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-          ON CONFLICT (id) DO NOTHING`
-	mustExec(ctx, conn, q, t.Id, t.ModelId, t.Symbol, t.Side, nullIfEmpty(t.TradeType),
-		nullFloat(t.Quantity), nullFloat(t.Leverage), nullFloat(t.Confidence), t.EntryPrice, entryMs,
-		t.ExitPrice, exitMs, t.RealizedGrossPnl, t.RealizedNetPnl, t.TotalCommissionDollars)
+	if t == nil || strings.TrimSpace(t.ModelId) == "" || strings.TrimSpace(t.Symbol) == "" {
+		return
+	}
+	detail := tradeDetailJSON(t, entryMs, exitMs)
+	q := `INSERT INTO trades(id, trader_id, symbol, side, close_ts_ms, detail)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+          ON CONFLICT (id) DO UPDATE SET
+            trader_id = EXCLUDED.trader_id,
+            symbol = EXCLUDED.symbol,
+            side = EXCLUDED.side,
+            close_ts_ms = EXCLUDED.close_ts_ms,
+            detail = EXCLUDED.detail,
+            updated_at = NOW()`
+	mustExec(ctx, conn, q,
+		firstNonEmpty(t.Id, fmt.Sprintf("%s:%s:%d", t.ModelId, strings.ToUpper(t.Symbol), exitMs)),
+		strings.TrimSpace(t.ModelId),
+		strings.ToUpper(strings.TrimSpace(t.Symbol)),
+		normalizeSide(t.Side, t.Quantity),
+		exitMs,
+		detail,
+	)
 }
 
 func upsertModelAnalytics(ctx context.Context, conn sqlx.SqlConn, analytics *types.ModelAnalytics, serverTimeMs int64) {
@@ -230,39 +312,39 @@ func upsertModelAnalytics(ctx context.Context, conn sqlx.SqlConn, analytics *typ
 	mustExec(ctx, conn, q, analytics.ModelId, string(payload), serverTimeMs, analytics.UpdatedAt)
 }
 
-func nullIfEmpty(s string) interface{} {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	return s
-}
-func nullFloat(f float64) interface{} {
-	if f == 0 {
-		return nil
-	}
-	return f
-}
-
 type positionView struct {
-	EntryPrice float64 `json:"entry_price"`
-	Quantity   float64 `json:"quantity"`
-	Leverage   float64 `json:"leverage"`
-	Confidence float64 `json:"confidence"`
+	EntryPrice    float64 `json:"entry_price"`
+	Quantity      float64 `json:"quantity"`
+	Leverage      float64 `json:"leverage"`
+	Confidence    float64 `json:"confidence"`
+	RiskUsd       float64 `json:"risk_usd"`
+	UnrealizedPnl float64 `json:"unrealized_pnl"`
 }
 
 func insertPositionOpen(ctx context.Context, conn sqlx.SqlConn, modelId, symbol string, pos positionView, entryMs int64) {
-	q := `INSERT INTO positions(id, model_id, symbol, side, entry_price, quantity, leverage, confidence, entry_ts_ms, status)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open')
-          ON CONFLICT (id) DO NOTHING`
+	modelId = strings.TrimSpace(modelId)
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if modelId == "" || symbol == "" {
+		return
+	}
+	detail := positionDetailJSON(pos, entryMs)
+	q := `INSERT INTO positions(id, trader_id, symbol, side, status, detail)
+          VALUES ($1,$2,$3,$4,'open',$5::jsonb)
+          ON CONFLICT (id) DO UPDATE SET
+            trader_id = EXCLUDED.trader_id,
+            symbol = EXCLUDED.symbol,
+            side = EXCLUDED.side,
+            status = 'open',
+            detail = EXCLUDED.detail,
+            updated_at = NOW()`
 	pid := fmt.Sprintf("%s:%s:%d", modelId, symbol, entryMs)
-	side := "long" // 无法从示例数据稳定推断多空，默认 long；后续由导入源决定
-	mustExec(ctx, conn, q, pid, modelId, symbol, side, pos.EntryPrice, pos.Quantity, nullFloat(pos.Leverage), nullFloat(pos.Confidence), entryMs)
+	mustExec(ctx, conn, q, pid, modelId, symbol, normalizeSide("", pos.Quantity), detail)
 }
 
 func insertConversation(ctx context.Context, conn sqlx.SqlConn, modelId string) int64 {
-	q := `INSERT INTO conversations(model_id) VALUES ($1) RETURNING id`
+	q := `INSERT INTO conversations(model_id, topic, created_at) VALUES ($1, $2, NOW()) RETURNING id`
 	var id int64
-	if err := conn.QueryRowCtx(ctx, &id, q, modelId); err != nil {
+	if err := conn.QueryRowCtx(ctx, &id, q, strings.TrimSpace(modelId), "snapshot import"); err != nil {
 		log.Fatalf("insert conversation: %v", err)
 	}
 	return id
@@ -272,6 +354,149 @@ func insertConversationMessage(ctx context.Context, conn sqlx.SqlConn, convId in
 	if role == "" {
 		role = "assistant"
 	}
-	q := `INSERT INTO conversation_messages(conversation_id, role, content, ts_ms) VALUES ($1,$2,$3,$4)`
-	mustExec(ctx, conn, q, convId, role, content, ts)
+	q := `INSERT INTO conversation_messages(conversation_id, role, content, ts_ms, metadata, created_at)
+          VALUES ($1,$2,$3,$4,'{}',NOW())`
+	mustExec(ctx, conn, q, convId, role, content, nullInt(ts))
+}
+
+func tradeDetailJSON(t *types.Trade, entryMs, exitMs int64) string {
+	payload := map[string]any{
+		"time": map[string]any{
+			"open_ts_ms":  entryMs,
+			"close_ts_ms": exitMs,
+		},
+		"prices": map[string]any{
+			"entry": t.EntryPrice,
+			"exit":  t.ExitPrice,
+		},
+		"quantity": map[string]any{
+			"total": absFloat(t.Quantity),
+		},
+		"risk": map[string]any{
+			"confidence": t.Confidence,
+			"leverage":   t.Leverage,
+		},
+		"exchange": map[string]any{
+			"provider": "snapshot",
+		},
+		"pnl": map[string]any{
+			"gross": t.RealizedGrossPnl,
+			"net":   t.RealizedNetPnl,
+		},
+		"model_id":                 t.ModelId,
+		"symbol":                   strings.ToUpper(strings.TrimSpace(t.Symbol)),
+		"side":                     normalizeSide(t.Side, t.Quantity),
+		"trade_type":               firstNonEmpty(t.TradeType, normalizeSide(t.Side, t.Quantity)),
+		"trade_id":                 t.TradeId,
+		"leverage":                 t.Leverage,
+		"confidence":               t.Confidence,
+		"entry_price":              t.EntryPrice,
+		"exit_price":               t.ExitPrice,
+		"entry_time":               t.EntryTime,
+		"exit_time":                t.ExitTime,
+		"entry_human_time":         t.EntryHumanTime,
+		"exit_human_time":          t.ExitHumanTime,
+		"entry_sz":                 t.EntrySz,
+		"exit_sz":                  t.ExitSz,
+		"entry_tid":                t.EntryTid,
+		"exit_tid":                 t.ExitTid,
+		"entry_oid":                t.EntryOid,
+		"exit_oid":                 t.ExitOid,
+		"entry_crossed":            t.EntryCrossed,
+		"exit_crossed":             t.ExitCrossed,
+		"entry_liquidation":        t.EntryLiquidation,
+		"exit_liquidation":         t.ExitLiquidation,
+		"entry_commission_dollars": t.EntryCommissionDollars,
+		"exit_commission_dollars":  t.ExitCommissionDollars,
+		"entry_closed_pnl":         t.EntryClosedPnl,
+		"exit_closed_pnl":          t.ExitClosedPnl,
+		"exit_plan":                t.ExitPlan,
+		"realized_gross_pnl":       t.RealizedGrossPnl,
+		"realized_net_pnl":         t.RealizedNetPnl,
+		"total_commission_dollars": t.TotalCommissionDollars,
+	}
+	return mustMarshalJSON(payload, "trade detail")
+}
+
+func positionDetailJSON(pos positionView, entryMs int64) string {
+	payload := map[string]any{
+		"entry": map[string]any{
+			"price":    pos.EntryPrice,
+			"quantity": absFloat(pos.Quantity),
+			"time_ms":  entryMs,
+			"leverage": pos.Leverage,
+		},
+		"exchange": map[string]any{
+			"provider": "snapshot",
+		},
+		"risk": map[string]any{
+			"confidence": pos.Confidence,
+			"risk_usd":   firstPositiveFloat(pos.RiskUsd, absFloat(pos.Quantity)*pos.EntryPrice/maxFloat(pos.Leverage, 1)),
+		},
+		"metrics": map[string]any{
+			"unrealized_pnl": pos.UnrealizedPnl,
+		},
+	}
+	return mustMarshalJSON(payload, "position detail")
+}
+
+func mustMarshalJSON(payload any, label string) string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Fatalf("marshal %s: %v", label, err)
+	}
+	return string(data)
+}
+
+func normalizeSide(side string, quantity float64) string {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "short":
+		return "short"
+	case "long":
+		return "long"
+	default:
+		if quantity < 0 {
+			return "short"
+		}
+		return "long"
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func nullInt(v int64) interface{} {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }

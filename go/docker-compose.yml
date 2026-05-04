@@ -32,8 +32,9 @@ services:
       - ../mcp/data:/data:ro
     environment:
       - DataPath=/data
-      - Postgres__DSN=postgres://nof0:nof0@postgres:5432/nof0?sslmode=disable
-      - Redis__Host=redis:6379
+      - Postgres__DataSource=postgres://nof0:nof0@postgres:5432/nof0?sslmode=disable
+      - Cache__0__Host=redis:6379
+      - Cache__0__Tls=false
     restart: unless-stopped
     networks:
       - nof0-network
