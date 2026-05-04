@@ -95,3 +95,29 @@ jobs:
 
       - name: Run full CI-safe test suite
         run: make test-ci
+
+  db-migration-smoke:
+    name: DB migration smoke
+    runs-on: ubuntu-latest
+    needs:
+      - secret-scan
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: |
+            go/go.sum
+            go/scripts/migration-smoke/go.sum
+
+      - name: Download migration smoke dependencies
+        run: cd scripts/migration-smoke && go mod download
+
+      - name: Run migration up/down smoke
+        run: make test-migration-smoke

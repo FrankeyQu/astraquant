@@ -2,7 +2,7 @@
 	docker-up docker-down docker-reset docker-logs docker-ps \
 	db-local-migrate db-local-reset db-local-status \
 	migrate-up migrate-down migrate-create migrate-status migrate-force model-gen \
-	test test-ci test-unit test-integration test-all test-bench test-cover test-race test-storage \
+	test test-ci test-migration-smoke test-unit test-integration test-all test-bench test-cover test-race test-storage \
 	run-llm run-llm-fast \
 	lint fmt check check-all install
 
@@ -138,6 +138,9 @@ test: ## Run basic Go tests
 
 test-ci: ## Run the full CI-safe Go test suite without CGO
 	CGO_ENABLED=0 go test ./...
+
+test-migration-smoke: ## Run Postgres migration up/down smoke test
+	cd scripts/migration-smoke && go run . -migrations ../../migrations
 
 test-unit: ## Run unit tests using Python test script
 	python $(TEST_SCRIPT) unit
