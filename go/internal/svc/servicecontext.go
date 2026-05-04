@@ -70,6 +70,7 @@ type ServiceContext struct {
 	AccountEquitySnapshotsModel model.AccountEquitySnapshotsModel
 	PositionsModel              model.PositionsModel
 	TradesModel                 model.TradesModel
+	ModelAnalyticsModel         model.ModelAnalyticsModel
 	ConversationsModel          model.ConversationsModel
 	ConversationMessagesModel   model.ConversationMessagesModel
 	DecisionCyclesModel         model.DecisionCyclesModel
@@ -303,6 +304,7 @@ func NewServiceContext(c config.Config, mainConfigPath string) *ServiceContext {
 		svc.AccountEquitySnapshotsModel = model.NewAccountEquitySnapshotsModel(conn, cacheNodes, cacheOpts...)
 		svc.PositionsModel = model.NewPositionsModel(conn, cacheNodes, cacheOpts...)
 		svc.TradesModel = model.NewTradesModel(conn, cacheNodes, cacheOpts...)
+		svc.ModelAnalyticsModel = model.NewModelAnalyticsModel(conn, cacheNodes, cacheOpts...)
 		svc.ConversationsModel = model.NewConversationsModel(conn, cacheNodes, cacheOpts...)
 		svc.ConversationMessagesModel = model.NewConversationMessagesModel(conn, cacheNodes, cacheOpts...)
 		svc.DecisionCyclesModel = model.NewDecisionCyclesModel(conn, cacheNodes, cacheOpts...)

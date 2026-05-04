@@ -34,7 +34,7 @@ func main() {
 	logx.Infof("connecting to %s", dsn)
 
 	if truncate {
-		mustExec(ctx, conn, `TRUNCATE TABLE conversation_messages, conversations, trades, positions, account_equity_snapshots, accounts, price_ticks, symbols, models RESTART IDENTITY CASCADE`)
+		mustExec(ctx, conn, `TRUNCATE TABLE conversation_messages, conversations, model_analytics, trades, positions, account_equity_snapshots, accounts, price_ticks, symbols, models RESTART IDENTITY CASCADE`)
 	}
 
 	// Use existing DataLoader to parse JSON
@@ -96,9 +96,27 @@ func main() {
 		log.Printf("skip positions: %v", err)
 	}
 
-	// 5) Analytics table removed; data now flows through Redis caches only.
-	if _, err := dl.LoadAnalytics(); err == nil {
-		log.Printf("skip analytics import: table removed (Redis-only)")
+	// 5) Analytics -> model_analytics payload cache
+	if resp, err := dl.LoadAnalytics(); err == nil {
+		imported := 0
+		for _, analytics := range resp.Analytics {
+			modelID := strings.TrimSpace(analytics.ModelId)
+			if modelID == "" {
+				modelID = strings.TrimSpace(analytics.Id)
+			}
+			if modelID == "" {
+				continue
+			}
+			analytics.ModelId = modelID
+			if analytics.Id == "" {
+				analytics.Id = modelID
+			}
+			modelSet[modelID] = struct{}{}
+			upsertModel(ctx, conn, modelID, modelID)
+			upsertModelAnalytics(ctx, conn, &analytics, resp.ServerTime)
+			imported++
+		}
+		log.Printf("imported analytics: %d", imported)
 	} else {
 		log.Printf("skip analytics: %v", err)
 	}
@@ -195,6 +213,21 @@ func insertTrade(ctx context.Context, conn sqlx.SqlConn, t *types.Trade, entryMs
 	mustExec(ctx, conn, q, t.Id, t.ModelId, t.Symbol, t.Side, nullIfEmpty(t.TradeType),
 		nullFloat(t.Quantity), nullFloat(t.Leverage), nullFloat(t.Confidence), t.EntryPrice, entryMs,
 		t.ExitPrice, exitMs, t.RealizedGrossPnl, t.RealizedNetPnl, t.TotalCommissionDollars)
+}
+
+func upsertModelAnalytics(ctx context.Context, conn sqlx.SqlConn, analytics *types.ModelAnalytics, serverTimeMs int64) {
+	payload, err := json.Marshal(analytics)
+	if err != nil {
+		log.Fatalf("marshal analytics payload: %v", err)
+	}
+	q := `INSERT INTO model_analytics(model_id, payload, server_time_ms, metadata, updated_at)
+          VALUES ($1, $2::jsonb, $3, '{}'::jsonb, COALESCE(to_timestamp(NULLIF($4, 0)), NOW()))
+          ON CONFLICT (model_id) DO UPDATE SET
+            payload = EXCLUDED.payload,
+            server_time_ms = EXCLUDED.server_time_ms,
+            metadata = EXCLUDED.metadata,
+            updated_at = EXCLUDED.updated_at`
+	mustExec(ctx, conn, q, analytics.ModelId, string(payload), serverTimeMs, analytics.UpdatedAt)
 }
 
 func nullIfEmpty(s string) interface{} {

@@ -125,10 +125,12 @@ type (
 	}
 
 	ModelAnalytics struct {
-		ModelId   string    `db:"model_id"`
-		Metric    string    `db:"metric"`
-		Value     float64   `db:"value"`
-		UpdatedAt time.Time `db:"updated_at"`
+		ModelId      string        `db:"model_id"`
+		Payload      string        `db:"payload"`
+		ServerTimeMs sql.NullInt64 `db:"server_time_ms"`
+		Metadata     string        `db:"metadata"`
+		UpdatedAt    time.Time     `db:"updated_at"`
+		CreatedAt    time.Time     `db:"created_at"`
 	}
 
 	Models struct {
